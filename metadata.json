@@ -1,0 +1,5 @@
+{
+  "name": "Strategy IO Game",
+  "description": "A 2-player strategy game where units with higher HP crush smaller ones and merge when close.",
+  "requestFramePermissions": []
+}
