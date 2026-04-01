@@ -36,15 +36,19 @@ export interface Unit {
   attackRadius: number;
   targetX: number;
   targetY: number;
+  pendingTargetX?: number;
+  pendingTargetY?: number;
   occupyingBuildingId?: string;
   lastAttackTime?: number;
   
   // Aircraft specific
   aircraftState?: AircraftState;
+  pendingAircraftState?: AircraftState;
   ammo?: { bombs: number; missiles: number };
   selectedWeapon?: WeaponType;
   baseRunwayId?: string;
   attackPoint?: { x: number; y: number };
+  pendingAttackPoint?: { x: number; y: number };
   
   // Anti-air
   canAttackAir?: boolean;
@@ -120,4 +124,6 @@ export interface GameState {
   height: number;
   combatEffects: CombatEffect[];
   airProjectiles: AirProjectile[];
+  tick: number;
+  nextTickTime: number; // Timestamp in ms
 }

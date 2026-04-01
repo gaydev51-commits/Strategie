@@ -1,5 +1,5 @@
 {
-  "name": "Strategy IO Game",
-  "description": "A 2-player strategy game where units with higher HP crush smaller ones and merge when close.",
+  "name": "Strategie",
+  "description": "A real-time strategy game with a tick-based command system, simulating command latency and inertia.",
   "requestFramePermissions": []
 }

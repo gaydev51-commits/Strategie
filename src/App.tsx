@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sword, Shield, Activity, Users, Target, MousePointer2, Plus, Minus, LogIn, LogOut, Play, Map as MapIcon, Loader2, User as UserIcon } from 'lucide-react';
+import { Sword, Shield, Activity, Users, Target, MousePointer2, Plus, Minus, LogIn, LogOut, Play, Map as MapIcon, Loader2, User as UserIcon, Clock } from 'lucide-react';
 import { PlayerID, Unit, Player, GameState, EnvironmentObject, Building, HeightArea, Session } from './types.ts';
 import { GAME_WIDTH, GAME_HEIGHT, PLAYER_COLORS, UNIT_CONFIG, INITIAL_UNITS_PER_PLAYER, TERRAIN_SPEED_MULTIPLIERS, BUILDING_CONFIG } from './constants.ts';
 import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, User, OperationType, handleFirestoreError, createUserWithEmailAndPassword, signInWithEmailAndPassword } from './firebase';
@@ -72,8 +72,11 @@ const createUnit = (id: string, ownerId: PlayerID, x: number, y: number, hp: num
     attackRadius: radius * attackRadiusRatio,
     targetX: x,
     targetY: y,
+    pendingTargetX: x,
+    pendingTargetY: y,
     lastAttackTime: (isArtillery || isAircraft || isAA) ? 0 : undefined,
     aircraftState: isAircraft ? 'idle' : undefined,
+    pendingAircraftState: isAircraft ? 'idle' : undefined,
     ammo: isAircraft ? { bombs: UNIT_CONFIG.AIRCRAFT_AMMO_BOMBS, missiles: UNIT_CONFIG.AIRCRAFT_AMMO_MISSILES } : undefined,
     selectedWeapon: isAircraft ? 'both' : undefined,
     canAttackAir: isAA,
@@ -135,6 +138,8 @@ const createInitialGameState = (): GameState => {
     height: GAME_HEIGHT,
     combatEffects: [],
     airProjectiles: [],
+    tick: 0,
+    nextTickTime: Date.now() + 5000,
   };
 };
 
@@ -700,18 +705,18 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
     setGameState(prev => {
       const nextUnits = [...prev.units];
       let changed = false;
-      Object.entries(session.clientTargets!).forEach(([unitId, targets]) => {
+      Object.entries(session.clientTargets!).forEach(([unitId, targets]: [string, any]) => {
         const unitIndex = nextUnits.findIndex(u => u.id === unitId);
         // Only merge if it's NOT the host's unit (host handles its own units locally)
         if (unitIndex !== -1 && nextUnits[unitIndex].ownerId !== myTeam) {
           const unit = nextUnits[unitIndex];
-          if (unit.targetX !== targets.targetX || unit.targetY !== targets.targetY || unit.aircraftState !== targets.aircraftState) {
+          if (unit.pendingTargetX !== targets.pendingTargetX || unit.pendingTargetY !== targets.pendingTargetY || unit.pendingAircraftState !== targets.pendingAircraftState) {
             nextUnits[unitIndex] = { 
               ...unit, 
-              targetX: targets.targetX, 
-              targetY: targets.targetY,
-              attackPoint: targets.attackPoint,
-              aircraftState: targets.aircraftState || unit.aircraftState,
+              pendingTargetX: targets.pendingTargetX, 
+              pendingTargetY: targets.pendingTargetY,
+              pendingAttackPoint: targets.pendingAttackPoint,
+              pendingAircraftState: targets.pendingAircraftState || unit.pendingAircraftState,
               occupyingBuildingId: undefined 
             };
             changed = true;
@@ -756,7 +761,21 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
 
     const update = () => {
       setGameState((prev) => {
-        const nextUnits = prev.units.map(u => ({ ...u }));
+        const now = Date.now();
+        const isTick = now >= prev.nextTickTime;
+        
+        const nextUnits = prev.units.map(u => {
+          const unit = { ...u };
+          if (isTick) {
+            // Apply pending commands on tick
+            if (unit.pendingTargetX !== undefined) unit.targetX = unit.pendingTargetX;
+            if (unit.pendingTargetY !== undefined) unit.targetY = unit.pendingTargetY;
+            if (unit.pendingAttackPoint !== undefined) unit.attackPoint = unit.pendingAttackPoint;
+            if (unit.pendingAircraftState !== undefined) unit.aircraftState = unit.pendingAircraftState;
+          }
+          return unit;
+        });
+
         const nextBuildings = prev.buildings.map(b => ({ ...b }));
         const nextCombatEffects = prev.combatEffects
           .map(e => ({ ...e, lifetime: e.lifetime - 1 }))
@@ -1078,54 +1097,52 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
           squad.forEach(id => squads[id] = squad);
         });
 
-        // 3. Combat Logic
+        // 3. Combat Logic (Only on Ticks)
         const damageToApply: Record<string, number> = {};
         const buildingDamageToApply: Record<string, number> = {};
 
-        // Handle Projectile Impacts
-        prev.airProjectiles.forEach(p => {
-          const dist = getDistance(p.x, p.y, p.targetX, p.targetY);
-          if (dist < p.speed) {
-            // Impact!
-            const impactRadius = p.type === 'bomb' ? 50 : 20;
-            const buildingMultiplier = p.type === 'bomb' ? UNIT_CONFIG.PROJECTILE_BUILDING_MULTIPLIER_BOMB : UNIT_CONFIG.PROJECTILE_BUILDING_MULTIPLIER_MISSILE;
+        if (isTick) {
+          // Handle Projectile Impacts
+          prev.airProjectiles.forEach(p => {
+            const dist = getDistance(p.x, p.y, p.targetX, p.targetY);
+            if (dist < p.speed * 10) { // Increased tolerance for tick-based impact
+              // Impact!
+              const impactRadius = p.type === 'bomb' ? 50 : 20;
+              const buildingMultiplier = p.type === 'bomb' ? UNIT_CONFIG.PROJECTILE_BUILDING_MULTIPLIER_BOMB : UNIT_CONFIG.PROJECTILE_BUILDING_MULTIPLIER_MISSILE;
 
-            // 1. Damage Buildings first
-            nextBuildings.forEach(b => {
-              if (getDistance(b.x + b.width / 2, b.y + b.height / 2, p.targetX, p.targetY) < impactRadius) {
-                buildingDamageToApply[b.id] = (buildingDamageToApply[b.id] || 0) + p.damage * buildingMultiplier;
-              }
-            });
-
-            // 2. Damage Units (only if NOT in a building)
-            nextUnits.forEach(u => {
-              if (u.ownerId !== p.ownerId && getDistance(u.x, u.y, p.targetX, p.targetY) < impactRadius) {
-                if (!u.occupyingBuildingId) {
-                  damageToApply[u.id] = (damageToApply[u.id] || 0) + p.damage;
+              // 1. Damage Buildings first
+              nextBuildings.forEach(b => {
+                if (getDistance(b.x + b.width / 2, b.y + b.height / 2, p.targetX, p.targetY) < impactRadius) {
+                  buildingDamageToApply[b.id] = (buildingDamageToApply[b.id] || 0) + p.damage * buildingMultiplier;
                 }
-              }
-            });
-
-            // Visual effect for impact
-            for (let i = 0; i < 5; i++) {
-              nextCombatEffects.push({
-                fromX: p.targetX, fromY: p.targetY,
-                toX: p.targetX + (Math.random() - 0.5) * 40,
-                toY: p.targetY + (Math.random() - 0.5) * 40,
-                color: '#FFA500',
-                lifetime: 15
               });
+
+              // 2. Damage Units (only if NOT in a building)
+              nextUnits.forEach(u => {
+                if (u.ownerId !== p.ownerId && getDistance(u.x, u.y, p.targetX, p.targetY) < impactRadius) {
+                  if (!u.occupyingBuildingId) {
+                    damageToApply[u.id] = (damageToApply[u.id] || 0) + p.damage;
+                  }
+                }
+              });
+
+              // Visual effect for impact
+              for (let i = 0; i < 5; i++) {
+                nextCombatEffects.push({
+                  fromX: p.targetX, fromY: p.targetY,
+                  toX: p.targetX + (Math.random() - 0.5) * 40,
+                  toY: p.targetY + (Math.random() - 0.5) * 40,
+                  color: '#FFA500',
+                  lifetime: 15
+                });
+              }
             }
-          }
-        });
+          });
 
-        const now = Date.now();
-
-        // --- Artillery Attacks ---
-        nextUnits.forEach(unit => {
-          // Anti-Air Logic
-          if (unit.canAttackAir && unit.airAttackEfficiency !== undefined) {
-            if (now - (unit.lastAttackTime || 0) >= UNIT_CONFIG.AA_COOLDOWN) {
+          // --- Artillery Attacks ---
+          nextUnits.forEach(unit => {
+            // Anti-Air Logic
+            if (unit.canAttackAir && unit.airAttackEfficiency !== undefined) {
               // Priority 1: Projectiles (incoming threats)
               let targetProjectile = null;
               for (const p of nextAirProjectiles) {
@@ -1139,7 +1156,6 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               }
 
               if (targetProjectile) {
-                unit.lastAttackTime = now;
                 // Visual tracer
                 nextCombatEffects.push({
                   fromX: unit.x, fromY: unit.y,
@@ -1172,7 +1188,6 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
                 }
 
                 if (targetAircraft) {
-                  unit.lastAttackTime = now;
                   // Visual tracer
                   nextCombatEffects.push({
                     fromX: unit.x, fromY: unit.y,
@@ -1196,10 +1211,9 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
                 }
               }
             }
-          }
 
-          if (unit.unitType === 'artillery' && unit.lastAttackTime !== undefined) {
-            if (now - unit.lastAttackTime >= UNIT_CONFIG.ARTILLERY_COOLDOWN) {
+            if (unit.unitType === 'artillery' && unit.lastAttackTime !== undefined) {
+              // Artillery attacks every tick if target in range
               // Find closest enemy unit or building in range
               let closestTarget: { id: string, type: 'unit' | 'building', dist: number } | null = null;
 
@@ -1263,101 +1277,100 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
                     });
                   }
                 }
-                unit.lastAttackTime = now;
               }
             }
-          }
-        });
+          });
 
-        // --- Squad Combat ---
-        for (let i = 0; i < nextUnits.length; i++) {
-          for (let j = i + 1; j < nextUnits.length; j++) {
-            const u1 = nextUnits[i];
-            const u2 = nextUnits[j];
-            if (u1.ownerId === u2.ownerId) continue;
-            
-            const dist = getDistance(u1.x, u1.y, u2.x, u2.y);
-            
-            // Engagement check: combat only happens if at least one unit can reach the other
-            const u1CanReach = dist < u1.attackRadius;
-            const u2CanReach = dist < u2.attackRadius;
+          // --- Squad Combat ---
+          for (let i = 0; i < nextUnits.length; i++) {
+            for (let j = i + 1; j < nextUnits.length; j++) {
+              const u1 = nextUnits[i];
+              const u2 = nextUnits[j];
+              if (u1.ownerId === u2.ownerId) continue;
+              
+              const dist = getDistance(u1.x, u1.y, u2.x, u2.y);
+              
+              // Engagement check: combat only happens if at least one unit can reach the other
+              const u1CanReach = dist < u1.attackRadius;
+              const u2CanReach = dist < u2.attackRadius;
 
-            if (u1CanReach || u2CanReach) {
-              // Combat occurs
-              const squad1 = squads[u1.id];
-              const squad2 = squads[u2.id];
+              if (u1CanReach || u2CanReach) {
+                // Combat occurs
+                const squad1 = squads[u1.id];
+                const squad2 = squads[u2.id];
 
-              // Artillery doesn't contribute to squad HP for dealing damage, 
-              // but it can be a target.
-              const getSquadHP = (squad: Set<string>) => Array.from(squad).reduce((sum, id) => {
-                const u = nextUnits.find(unit => unit.id === id);
-                if (!u || u.unitType === 'artillery' || u.unitType === 'aa') return sum; // Artillery and AA don't help in ground offensive
-                let hp = u.hp;
-                if (u.occupyingBuildingId) {
-                  const b = nextBuildings.find(building => building.id === u.occupyingBuildingId);
-                  if (b) hp += b.hp;
-                }
-                return sum + hp;
-              }, 0);
-
-              const squad1HP = getSquadHP(squad1);
-              const squad2HP = getSquadHP(squad2);
-
-              // Squad 1 attacks Squad 2 (if squad 1 has non-artillery/AA units AND can reach)
-              if (squad1HP > 0 && u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa' && u1CanReach) {
-                const damage1to2 = UNIT_CONFIG.COMBAT_BASE_DAMAGE * (squad1HP / (squad2HP || 1));
-                squad2.forEach(id => {
+                // Artillery doesn't contribute to squad HP for dealing damage, 
+                // but it can be a target.
+                const getSquadHP = (squad: Set<string>) => Array.from(squad).reduce((sum, id) => {
                   const u = nextUnits.find(unit => unit.id === id);
-                  if (u?.unitType === 'artillery' || u?.unitType === 'aircraft' || u?.unitType === 'aa') return; 
-                  if (u?.occupyingBuildingId) {
-                    buildingDamageToApply[u.occupyingBuildingId] = (buildingDamageToApply[u.occupyingBuildingId] || 0) + damage1to2 / squad2.size;
-                  } else {
-                    damageToApply[id] = (damageToApply[id] || 0) + damage1to2 / squad2.size;
+                  if (!u || u.unitType === 'artillery' || u.unitType === 'aa') return sum; // Artillery and AA don't help in ground offensive
+                  let hp = u.hp;
+                  if (u.occupyingBuildingId) {
+                    const b = nextBuildings.find(building => building.id === u.occupyingBuildingId);
+                    if (b) hp += b.hp;
                   }
-                });
-              }
+                  return sum + hp;
+                }, 0);
 
-              // Direct damage to artillery/AA only if attacker can reach it
-              if (u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && (u2.unitType === 'artillery' || u2.unitType === 'aa') && u1CanReach) {
-                const directDamage = UNIT_CONFIG.COMBAT_BASE_DAMAGE * 2;
-                damageToApply[u2.id] = (damageToApply[u2.id] || 0) + directDamage;
-              }
-              if (u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa' && (u1.unitType === 'artillery' || u1.unitType === 'aa') && u2CanReach) {
-                const directDamage = UNIT_CONFIG.COMBAT_BASE_DAMAGE * 2;
-                damageToApply[u1.id] = (damageToApply[u1.id] || 0) + directDamage;
-              }
+                const squad1HP = getSquadHP(squad1);
+                const squad2HP = getSquadHP(squad2);
 
-              // Squad 2 attacks Squad 1 (if squad 2 has non-artillery/AA units AND can reach)
-              if (squad2HP > 0 && u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && u2CanReach) {
-                const damage2to1 = UNIT_CONFIG.COMBAT_BASE_DAMAGE * (squad2HP / (squad1HP || 1));
-                squad1.forEach(id => {
-                  const u = nextUnits.find(unit => unit.id === id);
-                  if (u?.unitType === 'artillery' || u?.unitType === 'aircraft' || u?.unitType === 'aa') return;
-                  if (u?.occupyingBuildingId) {
-                    buildingDamageToApply[u.occupyingBuildingId] = (buildingDamageToApply[u.occupyingBuildingId] || 0) + damage2to1 / squad1.size;
-                  } else {
-                    damageToApply[id] = (damageToApply[id] || 0) + damage2to1 / squad1.size;
-                  }
-                });
-              }
-
-              // Visual Effect (only for non-artillery/aircraft/AA units, artillery/AA has its own logic)
-              if (Math.random() > 0.8 && u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa') {
-                if (u1CanReach) {
-                  nextCombatEffects.push({
-                    fromX: u1.x, fromY: u1.y,
-                    toX: u2.x, toY: u2.y,
-                    color: prev.players[u1.ownerId].color,
-                    lifetime: 10,
+                // Squad 1 attacks Squad 2 (if squad 1 has non-artillery/AA units AND can reach)
+                if (squad1HP > 0 && u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa' && u1CanReach) {
+                  const damage1to2 = UNIT_CONFIG.COMBAT_BASE_DAMAGE * (squad1HP / (squad2HP || 1)) * 50; // Scaled for 5s tick
+                  squad2.forEach(id => {
+                    const u = nextUnits.find(unit => unit.id === id);
+                    if (u?.unitType === 'artillery' || u?.unitType === 'aircraft' || u?.unitType === 'aa') return; 
+                    if (u?.occupyingBuildingId) {
+                      buildingDamageToApply[u.occupyingBuildingId] = (buildingDamageToApply[u.occupyingBuildingId] || 0) + damage1to2 / squad2.size;
+                    } else {
+                      damageToApply[id] = (damageToApply[id] || 0) + damage1to2 / squad2.size;
+                    }
                   });
                 }
-                if (u2CanReach) {
-                  nextCombatEffects.push({
-                    fromX: u2.x, fromY: u2.y,
-                    toX: u1.x, toY: u1.y,
-                    color: prev.players[u2.ownerId].color,
-                    lifetime: 10,
+
+                // Direct damage to artillery/AA only if attacker can reach it
+                if (u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && (u2.unitType === 'artillery' || u2.unitType === 'aa') && u1CanReach) {
+                  const directDamage = UNIT_CONFIG.COMBAT_BASE_DAMAGE * 2 * 50;
+                  damageToApply[u2.id] = (damageToApply[u2.id] || 0) + directDamage;
+                }
+                if (u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa' && (u1.unitType === 'artillery' || u1.unitType === 'aa') && u2CanReach) {
+                  const directDamage = UNIT_CONFIG.COMBAT_BASE_DAMAGE * 2 * 50;
+                  damageToApply[u1.id] = (damageToApply[u1.id] || 0) + directDamage;
+                }
+
+                // Squad 2 attacks Squad 1 (if squad 2 has non-artillery/AA units AND can reach)
+                if (squad2HP > 0 && u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && u2CanReach) {
+                  const damage2to1 = UNIT_CONFIG.COMBAT_BASE_DAMAGE * (squad2HP / (squad1HP || 1)) * 50;
+                  squad1.forEach(id => {
+                    const u = nextUnits.find(unit => unit.id === id);
+                    if (u?.unitType === 'artillery' || u?.unitType === 'aircraft' || u?.unitType === 'aa') return;
+                    if (u?.occupyingBuildingId) {
+                      buildingDamageToApply[u.occupyingBuildingId] = (buildingDamageToApply[u.occupyingBuildingId] || 0) + damage2to1 / squad1.size;
+                    } else {
+                      damageToApply[id] = (damageToApply[id] || 0) + damage2to1 / squad1.size;
+                    }
                   });
+                }
+
+                // Visual Effect (only for non-artillery/aircraft/AA units, artillery/AA has its own logic)
+                if (Math.random() > 0.8 && u1.unitType !== 'artillery' && u1.unitType !== 'aircraft' && u1.unitType !== 'aa' && u2.unitType !== 'artillery' && u2.unitType !== 'aircraft' && u2.unitType !== 'aa') {
+                  if (u1CanReach) {
+                    nextCombatEffects.push({
+                      fromX: u1.x, fromY: u1.y,
+                      toX: u2.x, toY: u2.y,
+                      color: prev.players[u1.ownerId].color,
+                      lifetime: 10,
+                    });
+                  }
+                  if (u2CanReach) {
+                    nextCombatEffects.push({
+                      fromX: u2.x, fromY: u2.y,
+                      toX: u1.x, toY: u1.y,
+                      color: prev.players[u2.ownerId].color,
+                      lifetime: 10,
+                    });
+                  }
                 }
               }
             }
@@ -1397,6 +1410,8 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
           buildings: filteredBuildings,
           combatEffects: nextCombatEffects,
           airProjectiles: nextAirProjectiles,
+          tick: isTick ? prev.tick + 1 : prev.tick,
+          nextTickTime: isTick ? now + 5000 : prev.nextTickTime,
         };
       });
 
@@ -1742,6 +1757,48 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
       ctx.setLineDash([]);
     }
 
+    // Draw pending targets for selected units
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1 / zoom;
+    ctx.setLineDash([4 / zoom, 4 / zoom]);
+    gameState.units.forEach(unit => {
+      if (selectedUnitIds.has(unit.id)) {
+        // Line to pending target
+        if (unit.pendingTargetX !== undefined && unit.pendingTargetY !== undefined && 
+            (unit.pendingTargetX !== unit.targetX || unit.pendingTargetY !== unit.targetY)) {
+          ctx.beginPath();
+          ctx.moveTo(unit.x, unit.y);
+          ctx.lineTo(unit.pendingTargetX, unit.pendingTargetY);
+          ctx.stroke();
+
+          // Small cross at pending target
+          ctx.beginPath();
+          const size = 5 / zoom;
+          ctx.moveTo(unit.pendingTargetX - size, unit.pendingTargetY - size);
+          ctx.lineTo(unit.pendingTargetX + size, unit.pendingTargetY + size);
+          ctx.moveTo(unit.pendingTargetX + size, unit.pendingTargetY - size);
+          ctx.lineTo(unit.pendingTargetX - size, unit.pendingTargetY + size);
+          ctx.stroke();
+        }
+
+        // Line to pending attack point for aircraft
+        if (unit.unitType === 'aircraft' && unit.pendingAttackPoint) {
+          ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)'; // Red-500 with opacity
+          ctx.beginPath();
+          ctx.moveTo(unit.x, unit.y);
+          ctx.lineTo(unit.pendingAttackPoint.x, unit.pendingAttackPoint.y);
+          ctx.stroke();
+          
+          // Target circle at pending attack point
+          ctx.beginPath();
+          ctx.arc(unit.pendingAttackPoint.x, unit.pendingAttackPoint.y, 10 / zoom, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        }
+      }
+    });
+    ctx.setLineDash([]);
+
     // Draw air projectiles
     gameState.airProjectiles.forEach(p => {
       ctx.fillStyle = p.type === 'bomb' ? '#555' : '#f00';
@@ -1868,18 +1925,18 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
         targetX = Math.max(unit.radius, Math.min(GAME_WIDTH - unit.radius, targetX));
         targetY = Math.max(unit.radius, Math.min(GAME_HEIGHT - unit.radius, targetY));
 
-        let aircraftState = unit.aircraftState;
-        let attackPoint = unit.attackPoint;
+        let pendingAircraftState = unit.aircraftState;
+        let pendingAttackPoint = unit.attackPoint;
 
         if (unit.unitType === 'aircraft') {
           if (unit.aircraftState === 'idle' || unit.aircraftState === 'returning' || unit.aircraftState === 'flyingToTarget') {
-            aircraftState = 'takingOff';
-            attackPoint = { x, y };
+            pendingAircraftState = 'takingOff';
+            pendingAttackPoint = { x, y };
           }
         }
 
-        updates[unit.id] = { targetX, targetY, attackPoint, aircraftState };
-        return { ...unit, targetX, targetY, attackPoint, aircraftState, occupyingBuildingId: undefined };
+        updates[unit.id] = { pendingTargetX: targetX, pendingTargetY: targetY, pendingAttackPoint, pendingAircraftState };
+        return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, pendingAttackPoint, pendingAircraftState, occupyingBuildingId: undefined };
       }
       return unit;
     });
@@ -1980,8 +2037,8 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
                 if (unit.aircraftState === 'idle' || unit.aircraftState === 'returning' || unit.aircraftState === 'flyingToTarget') {
                   return {
                     ...unit,
-                    attackPoint: { x, y },
-                    aircraftState: 'takingOff'
+                    pendingAttackPoint: { x, y },
+                    pendingAircraftState: 'takingOff'
                   };
                 }
                 return unit;
@@ -2008,7 +2065,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               targetX = Math.max(unit.radius, Math.min(GAME_WIDTH - unit.radius, targetX));
               targetY = Math.max(unit.radius, Math.min(GAME_HEIGHT - unit.radius, targetY));
 
-              return { ...unit, targetX, targetY, occupyingBuildingId: undefined };
+              return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, occupyingBuildingId: undefined };
             }
             return unit;
           })
@@ -2120,40 +2177,63 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
           </div>
           
           {/* Zoom & Pan Controls - Adjusted for Overlay */}
-          <div className="absolute bottom-6 right-6 z-20 flex flex-col gap-2">
-            <button
-              onClick={() => setZoom(prev => Math.min(prev + 0.2, 3))}
-              className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
-              title="Zoom In"
-            >
-              <Plus className="w-5 h-5 text-white" />
-            </button>
-            <button
-              onClick={() => setZoom(prev => Math.max(prev - 0.2, 0.5))}
-              className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
-              title="Zoom Out"
-            >
-              <Minus className="w-5 h-5 text-white" />
-            </button>
-            <button
-              onClick={() => {
-                setZoom(1);
-                setCamera({ x: 0, y: 0 });
-              }}
-              className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
-              title="Reset View"
-            >
-              <Target className="w-5 h-5 text-white" />
-            </button>
-            <button
-              onClick={() => setPanMode(!panMode)}
-              className={`p-3 backdrop-blur-md rounded-xl border transition-all pointer-events-auto ${panMode ? 'bg-blue-600 border-blue-400' : 'bg-black/60 border-white/10 hover:bg-white/10'}`}
-              title="Pan Mode (Touch)"
-            >
-              <MousePointer2 className="w-5 h-5 text-white" />
-            </button>
-            <div className="bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg border border-white/10 text-[10px] font-mono text-center text-white/60">
-              {Math.round(zoom * 100)}%
+          <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 items-end">
+            {/* Tick Countdown */}
+            <div className="bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 flex flex-col items-center min-w-[120px]">
+              <div className="text-[8px] text-white/40 uppercase tracking-widest font-bold mb-1">Command Window</div>
+              <div className="flex items-center gap-2">
+                <Clock className="w-3 h-3 text-blue-400" />
+                <span className="text-lg font-bold font-mono text-white">
+                  {Math.max(0, (gameState.nextTickTime - Date.now()) / 1000).toFixed(1)}s
+                </span>
+              </div>
+              <div className="w-full h-1 bg-white/10 rounded-full mt-2 overflow-hidden">
+                <motion.div 
+                  className="h-full bg-blue-500"
+                  initial={false}
+                  animate={{ 
+                    width: `${Math.max(0, Math.min(100, ((gameState.nextTickTime - Date.now()) / 5000) * 100))}%` 
+                  }}
+                  transition={{ duration: 0.1, ease: "linear" }}
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 mt-2">
+              <button
+                onClick={() => setZoom(prev => Math.min(prev + 0.2, 3))}
+                className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
+                title="Zoom In"
+              >
+                <Plus className="w-5 h-5 text-white" />
+              </button>
+              <button
+                onClick={() => setZoom(prev => Math.max(prev - 0.2, 0.5))}
+                className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
+                title="Zoom Out"
+              >
+                <Minus className="w-5 h-5 text-white" />
+              </button>
+              <button
+                onClick={() => {
+                  setZoom(1);
+                  setCamera({ x: 0, y: 0 });
+                }}
+                className="p-3 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 hover:bg-white/10 transition-all pointer-events-auto"
+                title="Reset View"
+              >
+                <Target className="w-5 h-5 text-white" />
+              </button>
+              <button
+                onClick={() => setPanMode(!panMode)}
+                className={`p-3 backdrop-blur-md rounded-xl border transition-all pointer-events-auto ${panMode ? 'bg-blue-600 border-blue-400' : 'bg-black/60 border-white/10 hover:bg-white/10'}`}
+                title="Pan Mode (Touch)"
+              >
+                <MousePointer2 className="w-5 h-5 text-white" />
+              </button>
+              <div className="bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg border border-white/10 text-[10px] font-mono text-center text-white/60">
+                {Math.round(zoom * 100)}%
+              </div>
             </div>
           </div>
 
