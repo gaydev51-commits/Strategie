@@ -161,16 +161,17 @@ export default function App() {
         uid: u.uid,
         displayName: displayName || email.split('@')[0],
         email: u.email,
-        photoURL: u.photoURL,
+        photoURL: u.photoURL || '',
         createdAt: serverTimestamp()
       });
     } catch (error: any) {
       console.error("Sign up failed", error);
-      let message = "Sign up failed.";
+      let message = "Sign up failed: " + (error.message || "Unknown error");
       if (error.code === 'auth/email-already-in-use') message = "This email is already registered. Try logging in.";
       if (error.code === 'auth/weak-password') message = "Password should be at least 6 characters.";
       if (error.code === 'auth/invalid-email') message = "Invalid email format.";
-      if (error.code === 'auth/operation-not-allowed') message = "Email/Password login is not enabled in Firebase Console.";
+      if (error.code === 'auth/operation-not-allowed') message = "Email/Password login is not enabled in Firebase Console. Go to Authentication -> Sign-in method and enable it.";
+      if (error.code === 'permission-denied') message = "Database access denied. Please check Firestore rules.";
       throw new Error(message);
     }
   };
@@ -187,7 +188,10 @@ export default function App() {
   const createSession = async () => {
     if (!user) return;
     try {
+      const sessionsRef = collection(db, 'sessions');
+      const newDocRef = doc(sessionsRef); // Pre-generate ID
       const sessionData = {
+        id: newDocRef.id,
         mapId: 'test-map',
         status: 'waiting',
         players: {
@@ -202,8 +206,8 @@ export default function App() {
         updatedAt: serverTimestamp(),
         createdBy: user.uid
       };
-      const docRef = await addDoc(collection(db, 'sessions'), sessionData);
-      setCurrentSessionId(docRef.id);
+      await setDoc(newDocRef, sessionData);
+      setCurrentSessionId(newDocRef.id);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'sessions');
     }
