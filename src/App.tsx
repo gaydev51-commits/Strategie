@@ -342,9 +342,14 @@ function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: stri
         <p className="text-zinc-400 mb-8 text-center text-sm">Command your units and conquer the map.</p>
         
         {error && (
-          <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-4 rounded-xl mb-6 flex items-center gap-3">
-            <Activity className="w-4 h-4 shrink-0" />
-            {error}
+          <div className="space-y-2 mb-6">
+            <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-4 rounded-xl flex items-center gap-3">
+              <Activity className="w-4 h-4 shrink-0" />
+              {error}
+            </div>
+            <p className="text-[10px] text-zinc-600 text-center font-mono uppercase tracking-widest">
+              Debug Info: {error.includes('auth/') ? error : 'Check Firebase Console'}
+            </p>
           </div>
         )}
 
