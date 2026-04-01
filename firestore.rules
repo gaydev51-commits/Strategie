@@ -70,16 +70,8 @@ service cloud.firestore {
     // Rules
     // ===============================================================
 
-    match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create, update: if isOwner(userId);
-    }
-
-    match /sessions/{sessionId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isValidSession(request.resource.data) && request.resource.data.createdBy == request.auth.uid;
-      allow update: if isAuthenticated() && isValidSession(request.resource.data);
-      allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
+    match /{document=**} {
+      allow read, write: if isAuthenticated();
     }
 
     match /test/connection {
