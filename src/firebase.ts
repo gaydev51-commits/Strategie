@@ -9,9 +9,8 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
-// Use the database ID from the config file, or default to '(default)'
-// Most manual setups use '(default)', while AI Studio automated setups use a specific ID.
-const databaseId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+// Force use of '(default)' database which is the standard for manual Firebase projects
+const databaseId = '(default)';
 export const db = getFirestore(app, databaseId);
 
 export const googleProvider = new GoogleAuthProvider();
