@@ -1,20 +1,18 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, getDocFromServer } from 'firebase/firestore';
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-};
 
-const databaseId = import.meta.env.VITE_FIRESTORE_DATABASE_ID || '(default)';
+// Import the Firebase configuration directly from the file
+// This ensures the app works even if environment variables are not set in AI Studio settings
+import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+// Use the database ID from the config file, or default to '(default)'
+const databaseId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
 export const db = getFirestore(app, databaseId);
+
 export const googleProvider = new GoogleAuthProvider();
 
 export { signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, getDocFromServer, createUserWithEmailAndPassword, signInWithEmailAndPassword };
