@@ -100,8 +100,8 @@ export default function App() {
             await setDoc(userRef, {
               uid: u.uid,
               displayName: u.displayName || u.email?.split('@')[0] || 'Player',
-              email: u.email,
-              photoURL: u.photoURL,
+              email: u.email || '',
+              photoURL: u.photoURL || '',
               createdAt: serverTimestamp()
             });
           }
