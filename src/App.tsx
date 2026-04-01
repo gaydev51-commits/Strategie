@@ -95,15 +95,34 @@ export default function App() {
         if (u) {
           // Ensure user exists in Firestore
           const userRef = doc(db, 'users', u.uid);
-          const userSnap = await getDoc(userRef);
+          let userSnap;
+          try {
+            userSnap = await getDoc(userRef);
+          } catch (err: any) {
+            console.error("Failed to get user doc:", err);
+            // If we can't even read our own user doc, it's a rules issue
+            if (err.message.includes('permission-denied') || err.code === 'permission-denied') {
+              alert("Database access denied for your account. Please check your Firestore Security Rules in the Firebase Console.");
+            }
+            throw err;
+          }
+
           if (!userSnap.exists()) {
-            await setDoc(userRef, {
-              uid: u.uid,
-              displayName: u.displayName || u.email?.split('@')[0] || 'Player',
-              email: u.email || '',
-              photoURL: u.photoURL || '',
-              createdAt: serverTimestamp()
-            });
+            try {
+              await setDoc(userRef, {
+                uid: u.uid,
+                displayName: u.displayName || u.email?.split('@')[0] || 'Player',
+                email: u.email || '',
+                photoURL: u.photoURL || '',
+                createdAt: serverTimestamp()
+              });
+            } catch (err: any) {
+              console.error("Failed to create user doc:", err);
+              if (err.message.includes('permission-denied') || err.code === 'permission-denied') {
+                alert("Database access denied when creating your profile. Please check your Firestore Security Rules.");
+              }
+              throw err;
+            }
           }
           setUser(u);
         } else {
@@ -111,6 +130,8 @@ export default function App() {
         }
       } catch (error) {
         console.error("Auth state change error:", error);
+        // Don't immediately nullify user if it's just a database error, 
+        // but we need the user doc for the app to function.
         setUser(null);
       } finally {
         setLoading(false);
