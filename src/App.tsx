@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Sword, Shield, Activity, Users, Target, MousePointer2, Plus, Minus, LogIn, LogOut, Play, Map as MapIcon, Loader2, User as UserIcon } from 'lucide-react';
 import { PlayerID, Unit, Player, GameState, EnvironmentObject, Building, HeightArea, Session } from './types.ts';
 import { GAME_WIDTH, GAME_HEIGHT, PLAYER_COLORS, UNIT_CONFIG, INITIAL_UNITS_PER_PLAYER, TERRAIN_SPEED_MULTIPLIERS, BUILDING_CONFIG } from './constants.ts';
-import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, User, OperationType, handleFirestoreError } from './firebase';
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, User, OperationType, handleFirestoreError, createUserWithEmailAndPassword, signInWithEmailAndPassword } from './firebase';
 
 // --- Helper Functions ---
 
@@ -132,11 +132,21 @@ export default function App() {
     return unsubscribe;
   }, [currentSessionId]);
 
-  const handleLogin = async () => {
+  const handleLogin = async (email: string, pass: string) => {
     try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
       console.error("Login failed", error);
+      alert(error.message);
+    }
+  };
+
+  const handleSignUp = async (email: string, pass: string) => {
+    try {
+      await createUserWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
+      console.error("Sign up failed", error);
+      alert(error.message);
     }
   };
 
@@ -241,7 +251,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthScreen onLogin={handleLogin} />;
+    return <AuthScreen onLogin={handleLogin} onSignUp={handleSignUp} />;
   }
 
   if (!currentSessionId) {
@@ -261,26 +271,74 @@ export default function App() {
 
 // --- Sub-Components ---
 
-function AuthScreen({ onLogin }: { onLogin: () => void }) {
+function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: string) => void, onSignUp: (email: string, pass: string) => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLogin, setIsLogin] = useState(true);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLogin) {
+      onLogin(email, password);
+    } else {
+      onSignUp(email, password);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center"
+        className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8"
       >
-        <div className="w-20 h-20 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
-          <Sword className="w-10 h-10 text-orange-500" />
+        <div className="w-16 h-16 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+          <Sword className="w-8 h-8 text-orange-500" />
         </div>
-        <h1 className="text-3xl font-bold text-white mb-2">Strategy IO</h1>
-        <p className="text-zinc-400 mb-8">Join the ultimate tactical battleground. Command your units and conquer the map.</p>
-        <button 
-          onClick={onLogin}
-          className="w-full bg-white text-black font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-zinc-200 transition-colors"
-        >
-          <LogIn className="w-5 h-5" />
-          Sign in with Google
-        </button>
+        <h1 className="text-2xl font-bold text-white mb-2 text-center">Strategy IO</h1>
+        <p className="text-zinc-400 mb-8 text-center text-sm">Command your units and conquer the map.</p>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Email</label>
+            <input 
+              type="email" 
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
+              placeholder="your@email.com"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Password</label>
+            <input 
+              type="password" 
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
+              placeholder="••••••••"
+              required
+            />
+          </div>
+          
+          <button 
+            type="submit"
+            className="w-full bg-orange-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-orange-600 transition-colors mt-2"
+          >
+            <LogIn className="w-5 h-5" />
+            {isLogin ? 'Login' : 'Create Account'}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
+          <button 
+            onClick={() => setIsLogin(!isLogin)}
+            className="text-orange-500 text-sm font-medium hover:underline"
+          >
+            {isLogin ? "Don't have an account? Sign up" : "Already have an account? Login"}
+          </button>
+        </div>
       </motion.div>
     </div>
   );
@@ -304,11 +362,15 @@ function MenuScreen({ user, onLogout, onCreateSession, onJoinSession }: { user: 
       <div className="max-w-4xl mx-auto">
         <header className="flex items-center justify-between mb-12">
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-orange-500">
-              <img src={user.photoURL || ''} alt="" referrerPolicy="no-referrer" />
+            <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-orange-500 flex items-center justify-center bg-zinc-800">
+              {user.photoURL ? (
+                <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+              ) : (
+                <UserIcon className="w-6 h-6 text-orange-500" />
+              )}
             </div>
             <div>
-              <h2 className="font-bold text-lg">{user.displayName}</h2>
+              <h2 className="font-bold text-lg">{user.displayName || user.email?.split('@')[0] || 'Player'}</h2>
               <p className="text-zinc-500 text-sm">Ready for battle</p>
             </div>
           </div>
