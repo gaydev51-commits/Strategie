@@ -137,16 +137,35 @@ export default function App() {
       await signInWithEmailAndPassword(auth, email, pass);
     } catch (error: any) {
       console.error("Login failed", error);
-      alert(error.message);
+      let message = "Login failed. Please check your credentials.";
+      if (error.code === 'auth/user-not-found') message = "No account found with this email. Please sign up first.";
+      if (error.code === 'auth/wrong-password') message = "Incorrect password.";
+      if (error.code === 'auth/invalid-email') message = "Invalid email format.";
+      throw new Error(message);
     }
   };
 
-  const handleSignUp = async (email: string, pass: string) => {
+  const handleSignUp = async (email: string, pass: string, displayName: string) => {
     try {
-      await createUserWithEmailAndPassword(auth, email, pass);
+      const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+      const u = userCredential.user;
+      // Immediately set the display name in Firestore
+      const userRef = doc(db, 'users', u.uid);
+      await setDoc(userRef, {
+        uid: u.uid,
+        displayName: displayName || email.split('@')[0],
+        email: u.email,
+        photoURL: u.photoURL,
+        createdAt: serverTimestamp()
+      });
     } catch (error: any) {
       console.error("Sign up failed", error);
-      alert(error.message);
+      let message = "Sign up failed.";
+      if (error.code === 'auth/email-already-in-use') message = "This email is already registered. Try logging in.";
+      if (error.code === 'auth/weak-password') message = "Password should be at least 6 characters.";
+      if (error.code === 'auth/invalid-email') message = "Invalid email format.";
+      if (error.code === 'auth/operation-not-allowed') message = "Email/Password login is not enabled in Firebase Console.";
+      throw new Error(message);
     }
   };
 
@@ -271,17 +290,31 @@ export default function App() {
 
 // --- Sub-Components ---
 
-function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: string) => void, onSignUp: (email: string, pass: string) => void }) {
+function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: string) => Promise<void>, onSignUp: (email: string, pass: string, displayName: string) => Promise<void> }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [isLogin, setIsLogin] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isLogin) {
-      onLogin(email, password);
-    } else {
-      onSignUp(email, password);
+    setError(null);
+    setIsLoading(true);
+    try {
+      if (isLogin) {
+        await onLogin(email, password);
+      } else {
+        if (!displayName.trim()) {
+          throw new Error("Please enter a display name.");
+        }
+        await onSignUp(email, password, displayName);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -298,7 +331,27 @@ function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: stri
         <h1 className="text-2xl font-bold text-white mb-2 text-center">Strategy IO</h1>
         <p className="text-zinc-400 mb-8 text-center text-sm">Command your units and conquer the map.</p>
         
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-4 rounded-xl mb-6 flex items-center gap-3">
+            <Activity className="w-4 h-4 shrink-0" />
+            {error}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-4">
+          {!isLogin && (
+            <div>
+              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Display Name</label>
+              <input 
+                type="text" 
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
+                placeholder="Commander Name"
+                required={!isLogin}
+              />
+            </div>
+          )}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Email</label>
             <input 
@@ -317,23 +370,31 @@ function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: stri
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
-              placeholder="••••••••"
+              placeholder="Min 6 characters"
               required
             />
           </div>
           
           <button 
             type="submit"
-            className="w-full bg-orange-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-orange-600 transition-colors mt-2"
+            disabled={isLoading}
+            className="w-full bg-orange-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-orange-600 transition-colors mt-2 disabled:opacity-50"
           >
-            <LogIn className="w-5 h-5" />
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <LogIn className="w-5 h-5" />
+            )}
             {isLogin ? 'Login' : 'Create Account'}
           </button>
         </form>
 
         <div className="mt-6 text-center">
           <button 
-            onClick={() => setIsLogin(!isLogin)}
+            onClick={() => {
+              setIsLogin(!isLogin);
+              setError(null);
+            }}
             className="text-orange-500 text-sm font-medium hover:underline"
           >
             {isLogin ? "Don't have an account? Sign up" : "Already have an account? Login"}
