@@ -10,6 +10,7 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 // Use the database ID from the config file, or default to '(default)'
+// Most manual setups use '(default)', while AI Studio automated setups use a specific ID.
 const databaseId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
 export const db = getFirestore(app, databaseId);
 
