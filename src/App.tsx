@@ -81,6 +81,63 @@ const createUnit = (id: string, ownerId: PlayerID, x: number, y: number, hp: num
   };
 };
 
+const createInitialGameState = (): GameState => {
+  const units: Unit[] = [];
+  const environmentObjects: EnvironmentObject[] = [
+    { id: 'road-1', type: 'road', x: 0, y: 380, width: 1200, height: 40 },
+    { id: 'road-2', type: 'road', x: 580, y: 0, width: 40, height: 800 },
+    { id: 'forest-1', type: 'forest', x: 200, y: 100, width: 200, height: 200 },
+    { id: 'forest-2', type: 'forest', x: 800, y: 500, width: 250, height: 200 },
+    { id: 'water-1', type: 'water', x: 400, y: 500, width: 400, height: 150 },
+    { id: 'runway-1', type: 'runway', x: 50, y: 300, width: 150, height: 60 },
+    { id: 'runway-2', type: 'runway', x: 1000, y: 300, width: 150, height: 60 },
+  ];
+  
+  for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
+    const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
+    units.push(createUnit(`p1-${i}`, 'player1', 100 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
+  }
+  const p1Aircraft = createUnit('p1-air-1', 'player1', 125, 330, 100, 'aircraft');
+  p1Aircraft.baseRunwayId = 'runway-1';
+  units.push(p1Aircraft);
+  
+  for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
+    const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
+    units.push(createUnit(`p2-${i}`, 'player2', 1000 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
+  }
+  const p2Aircraft = createUnit('p2-air-1', 'player2', 1075, 330, 100, 'aircraft');
+  p2Aircraft.baseRunwayId = 'runway-2';
+  units.push(p2Aircraft);
+
+  const buildings: Building[] = [
+    { id: 'building-1', x: 300, y: 300, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
+    { id: 'building-2', x: 900, y: 300, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
+    { id: 'building-3', x: 600, y: 150, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
+  ];
+
+  const heightAreas: HeightArea[] = [
+    { id: 'height-1', x: 50, y: 50, width: 150, height: 150, elevation: 15 },
+    { id: 'height-2', x: 1000, y: 50, width: 150, height: 150, elevation: 25 },
+    { id: 'height-3', x: 50, y: 600, width: 150, height: 150, elevation: 35 },
+    { id: 'height-4', x: 1000, y: 600, width: 150, height: 150, elevation: 45 },
+  ];
+
+  return {
+    units,
+    players: {
+      player1: { id: 'player1', color: PLAYER_COLORS.player1, score: 0 },
+      player2: { id: 'player2', color: PLAYER_COLORS.player2, score: 0 },
+    },
+    environmentObjects,
+    buildings,
+    heightAreas,
+    width: GAME_WIDTH,
+    height: GAME_HEIGHT,
+    combatEffects: [],
+    airProjectiles: [],
+  };
+};
+
 // --- Main Component ---
 
 export default function App() {
@@ -283,8 +340,10 @@ export default function App() {
 
     try {
       const sessionRef = doc(db, 'sessions', currentSessionId);
+      const initialGameState = createInitialGameState();
       await updateDoc(sessionRef, {
         status: 'playing',
+        gameState: initialGameState,
         updatedAt: serverTimestamp()
       });
     } catch (error) {
@@ -618,99 +677,50 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
   const isHost = session.createdBy === user.uid;
 
   const [gameState, setGameState] = useState<GameState>(() => {
-    // If session has gameState, use it, otherwise initialize
+    // If session has gameState, use it, otherwise initialize (should only happen for host if not yet synced)
     if (session.gameState) return session.gameState;
-
-    const units: Unit[] = [];
-    const environmentObjects: EnvironmentObject[] = [
-      { id: 'road-1', type: 'road', x: 0, y: 380, width: 1200, height: 40 },
-      { id: 'road-2', type: 'road', x: 580, y: 0, width: 40, height: 800 },
-      { id: 'forest-1', type: 'forest', x: 200, y: 100, width: 200, height: 200 },
-      { id: 'forest-2', type: 'forest', x: 800, y: 500, width: 250, height: 200 },
-      { id: 'water-1', type: 'water', x: 400, y: 500, width: 400, height: 150 },
-      { id: 'runway-1', type: 'runway', x: 50, y: 300, width: 150, height: 60 },
-      { id: 'runway-2', type: 'runway', x: 1000, y: 300, width: 150, height: 60 },
-    ];
-    
-    for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
-      const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
-      units.push(createUnit(`p1-${i}`, 'player1', 100 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
-    }
-    const p1Aircraft = createUnit('p1-air-1', 'player1', 125, 330, 100, 'aircraft');
-    p1Aircraft.baseRunwayId = 'runway-1';
-    units.push(p1Aircraft);
-    
-    for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
-      const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
-      units.push(createUnit(`p2-${i}`, 'player2', 1000 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
-    }
-    const p2Aircraft = createUnit('p2-air-1', 'player2', 1075, 330, 100, 'aircraft');
-    p2Aircraft.baseRunwayId = 'runway-2';
-    units.push(p2Aircraft);
-
-    const buildings: Building[] = [
-      { id: 'building-1', x: 300, y: 300, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
-      { id: 'building-2', x: 900, y: 300, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
-      { id: 'building-3', x: 600, y: 150, width: BUILDING_CONFIG.WIDTH, height: BUILDING_CONFIG.HEIGHT, hp: BUILDING_CONFIG.BASE_HP, maxHp: BUILDING_CONFIG.BASE_HP },
-    ];
-
-    const heightAreas: HeightArea[] = [
-      { id: 'height-1', x: 50, y: 50, width: 150, height: 150, elevation: 15 },
-      { id: 'height-2', x: 1000, y: 50, width: 150, height: 150, elevation: 25 },
-      { id: 'height-3', x: 50, y: 600, width: 150, height: 150, elevation: 35 },
-      { id: 'height-4', x: 1000, y: 600, width: 150, height: 150, elevation: 45 },
-    ];
-
-    return {
-      units,
-      players: {
-        player1: { id: 'player1', color: PLAYER_COLORS.player1, score: 0 },
-        player2: { id: 'player2', color: PLAYER_COLORS.player2, score: 0 },
-      },
-      environmentObjects,
-      buildings,
-      heightAreas,
-      width: GAME_WIDTH,
-      height: GAME_HEIGHT,
-      combatEffects: [],
-      airProjectiles: [],
-    };
+    return createInitialGameState();
   });
 
-  // Sync with Firestore
+  const gameStateRef = useRef<GameState>(gameState);
   useEffect(() => {
-    if (!session?.gameState) return;
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  // Sync with Firestore - Client side
+  useEffect(() => {
+    if (isHost || !session?.gameState) return;
+    setGameState(session.gameState);
+  }, [session?.gameState, isHost]);
+
+  // Sync with Firestore - Host side (merging client targets)
+  useEffect(() => {
+    if (!isHost || !session?.clientTargets) return;
     
-    if (!isHost) {
-      setGameState(session.gameState);
-    } else {
-      // Host: merge client's unit targets from clientTargets
-      if (session.clientTargets) {
-        setGameState(prev => {
-          const nextUnits = [...prev.units];
-          let changed = false;
-          Object.entries(session.clientTargets!).forEach(([unitId, targets]) => {
-            const unitIndex = nextUnits.findIndex(u => u.id === unitId);
-            if (unitIndex !== -1 && nextUnits[unitIndex].ownerId !== myTeam) {
-              const unit = nextUnits[unitIndex];
-              if (unit.targetX !== targets.targetX || unit.targetY !== targets.targetY) {
-                nextUnits[unitIndex] = { 
-                  ...unit, 
-                  targetX: targets.targetX, 
-                  targetY: targets.targetY,
-                  attackPoint: targets.attackPoint,
-                  aircraftState: targets.aircraftState || unit.aircraftState,
-                  occupyingBuildingId: undefined 
-                };
-                changed = true;
-              }
-            }
-          });
-          return changed ? { ...prev, units: nextUnits } : prev;
-        });
-      }
-    }
-  }, [session?.gameState, session?.clientTargets, isHost, myTeam]);
+    setGameState(prev => {
+      const nextUnits = [...prev.units];
+      let changed = false;
+      Object.entries(session.clientTargets!).forEach(([unitId, targets]) => {
+        const unitIndex = nextUnits.findIndex(u => u.id === unitId);
+        // Only merge if it's NOT the host's unit (host handles its own units locally)
+        if (unitIndex !== -1 && nextUnits[unitIndex].ownerId !== myTeam) {
+          const unit = nextUnits[unitIndex];
+          if (unit.targetX !== targets.targetX || unit.targetY !== targets.targetY || unit.aircraftState !== targets.aircraftState) {
+            nextUnits[unitIndex] = { 
+              ...unit, 
+              targetX: targets.targetX, 
+              targetY: targets.targetY,
+              attackPoint: targets.attackPoint,
+              aircraftState: targets.aircraftState || unit.aircraftState,
+              occupyingBuildingId: undefined 
+            };
+            changed = true;
+          }
+        }
+      });
+      return changed ? { ...prev, units: nextUnits } : prev;
+    });
+  }, [session?.clientTargets, isHost, myTeam]);
 
   // Host updates Firestore periodically
   useEffect(() => {
@@ -718,15 +728,15 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
     const interval = setInterval(async () => {
       try {
         await updateDoc(doc(db, 'sessions', session.id), {
-          gameState,
+          gameState: gameStateRef.current,
           updatedAt: serverTimestamp()
         });
       } catch (error) {
         console.error("Sync failed", error);
       }
-    }, 1000); // Sync every 1s to save quota
+    }, 500); // Sync every 500ms for better responsiveness
     return () => clearInterval(interval);
-  }, [gameState, isHost, session.id]);
+  }, [isHost, session.id]);
 
   const [selectedUnitIds, setSelectedUnitIds] = useState<Set<string>>(new Set());
   const [activePlayer, setActivePlayer] = useState<PlayerID>(myTeam);
