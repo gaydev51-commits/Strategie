@@ -91,24 +91,30 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (u) {
-        // Ensure user exists in Firestore
-        const userRef = doc(db, 'users', u.uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            uid: u.uid,
-            displayName: u.displayName,
-            email: u.email,
-            photoURL: u.photoURL,
-            createdAt: serverTimestamp()
-          });
+      try {
+        if (u) {
+          // Ensure user exists in Firestore
+          const userRef = doc(db, 'users', u.uid);
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              uid: u.uid,
+              displayName: u.displayName || u.email?.split('@')[0] || 'Player',
+              email: u.email,
+              photoURL: u.photoURL,
+              createdAt: serverTimestamp()
+            });
+          }
+          setUser(u);
+        } else {
+          setUser(null);
         }
-        setUser(u);
-      } else {
+      } catch (error) {
+        console.error("Auth state change error:", error);
         setUser(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
     return unsubscribe;
   }, []);
