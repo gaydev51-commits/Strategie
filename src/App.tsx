@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sword, Shield, Activity, Users, Target, MousePointer2, Plus, Minus } from 'lucide-react';
-import { PlayerID, Unit, Player, GameState, EnvironmentObject, Building, HeightArea } from './types.ts';
+import { Sword, Shield, Activity, Users, Target, MousePointer2, Plus, Minus, LogIn, LogOut, Play, Map as MapIcon, Loader2, User as UserIcon } from 'lucide-react';
+import { PlayerID, Unit, Player, GameState, EnvironmentObject, Building, HeightArea, Session } from './types.ts';
 import { GAME_WIDTH, GAME_HEIGHT, PLAYER_COLORS, UNIT_CONFIG, INITIAL_UNITS_PER_PLAYER, TERRAIN_SPEED_MULTIPLIERS, BUILDING_CONFIG } from './constants.ts';
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, User, OperationType, handleFirestoreError } from './firebase';
 
 // --- Helper Functions ---
 
@@ -83,10 +84,385 @@ const createUnit = (id: string, ownerId: PlayerID, x: number, y: number, hp: num
 // --- Main Component ---
 
 export default function App() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [gameState, setGameState] = useState<GameState>(() => {
-    const units: Unit[] = [];
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        // Ensure user exists in Firestore
+        const userRef = doc(db, 'users', u.uid);
+        const userSnap = await getDoc(userRef);
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            uid: u.uid,
+            displayName: u.displayName,
+            email: u.email,
+            photoURL: u.photoURL,
+            createdAt: serverTimestamp()
+          });
+        }
+        setUser(u);
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    if (!currentSessionId) {
+      setSession(null);
+      return;
+    }
+
+    const unsubscribe = onSnapshot(doc(db, 'sessions', currentSessionId), (doc) => {
+      if (doc.exists()) {
+        setSession({ id: doc.id, ...doc.data() } as Session);
+      } else {
+        setCurrentSessionId(null);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `sessions/${currentSessionId}`);
+    });
+
+    return unsubscribe;
+  }, [currentSessionId]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentSessionId(null);
+    } catch (error) {
+      console.error("Logout failed", error);
+    }
+  };
+
+  const createSession = async () => {
+    if (!user) return;
+    try {
+      const sessionData = {
+        mapId: 'test-map',
+        status: 'waiting',
+        players: {
+          [user.uid]: {
+            uid: user.uid,
+            displayName: user.displayName || 'Anonymous',
+            team: null,
+            joinedAt: new Date().toISOString()
+          }
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: user.uid
+      };
+      const docRef = await addDoc(collection(db, 'sessions'), sessionData);
+      setCurrentSessionId(docRef.id);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'sessions');
+    }
+  };
+
+  const joinSession = async (sessionId: string) => {
+    if (!user) return;
+    try {
+      const sessionRef = doc(db, 'sessions', sessionId);
+      const sessionSnap = await getDoc(sessionRef);
+      if (sessionSnap.exists()) {
+        const data = sessionSnap.data() as Session;
+        if (Object.keys(data.players).length < 2) {
+          await updateDoc(sessionRef, {
+            [`players.${user.uid}`]: {
+              uid: user.uid,
+              displayName: user.displayName || 'Anonymous',
+              team: null,
+              joinedAt: new Date().toISOString()
+            },
+            updatedAt: serverTimestamp()
+          });
+          setCurrentSessionId(sessionId);
+        }
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `sessions/${sessionId}`);
+    }
+  };
+
+  const selectTeam = async (team: PlayerID) => {
+    if (!user || !currentSessionId || !session) return;
+    try {
+      const sessionRef = doc(db, 'sessions', currentSessionId);
+      await updateDoc(sessionRef, {
+        [`players.${user.uid}.team`]: team,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
+    }
+  };
+
+  const startGame = async () => {
+    if (!user || !currentSessionId || !session) return;
+    // Check if both players have selected teams and they are different
+    const playerIds = Object.keys(session.players);
+    if (playerIds.length !== 2) return;
+    const p1 = session.players[playerIds[0]];
+    const p2 = session.players[playerIds[1]];
+    if (!p1.team || !p2.team || p1.team === p2.team) return;
+
+    try {
+      const sessionRef = doc(db, 'sessions', currentSessionId);
+      await updateDoc(sessionRef, {
+        status: 'playing',
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+        <Loader2 className="w-12 h-12 text-orange-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onLogin={handleLogin} />;
+  }
+
+  if (!currentSessionId) {
+    return <MenuScreen user={user} onLogout={handleLogout} onCreateSession={createSession} onJoinSession={joinSession} />;
+  }
+
+  if (session?.status === 'waiting') {
+    return <LobbyScreen user={user} session={session} onSelectTeam={selectTeam} onStart={startGame} onLeave={() => setCurrentSessionId(null)} />;
+  }
+
+  if (session?.status === 'playing') {
+    return <Game session={session} user={user} onExit={() => setCurrentSessionId(null)} />;
+  }
+
+  return null;
+}
+
+// --- Sub-Components ---
+
+function AuthScreen({ onLogin }: { onLogin: () => void }) {
+  return (
+    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center"
+      >
+        <div className="w-20 h-20 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+          <Sword className="w-10 h-10 text-orange-500" />
+        </div>
+        <h1 className="text-3xl font-bold text-white mb-2">Strategy IO</h1>
+        <p className="text-zinc-400 mb-8">Join the ultimate tactical battleground. Command your units and conquer the map.</p>
+        <button 
+          onClick={onLogin}
+          className="w-full bg-white text-black font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-zinc-200 transition-colors"
+        >
+          <LogIn className="w-5 h-5" />
+          Sign in with Google
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
+function MenuScreen({ user, onLogout, onCreateSession, onJoinSession }: { user: User, onLogout: () => void, onCreateSession: () => void, onJoinSession: (id: string) => void }) {
+  const [sessions, setSessions] = useState<Session[]>([]);
+
+  useEffect(() => {
+    const q = query(collection(db, 'sessions'), where('status', '==', 'waiting'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const s: Session[] = [];
+      snapshot.forEach(doc => s.push({ id: doc.id, ...doc.data() } as Session));
+      setSessions(s);
+    });
+    return unsubscribe;
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white p-6">
+      <div className="max-w-4xl mx-auto">
+        <header className="flex items-center justify-between mb-12">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-orange-500">
+              <img src={user.photoURL || ''} alt="" referrerPolicy="no-referrer" />
+            </div>
+            <div>
+              <h2 className="font-bold text-lg">{user.displayName}</h2>
+              <p className="text-zinc-500 text-sm">Ready for battle</p>
+            </div>
+          </div>
+          <button onClick={onLogout} className="p-2 hover:bg-zinc-900 rounded-lg text-zinc-400">
+            <LogOut className="w-6 h-6" />
+          </button>
+        </header>
+
+        <div className="grid md:grid-cols-2 gap-8">
+          <section>
+            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+              <MapIcon className="w-5 h-5 text-orange-500" />
+              Available Maps
+            </h3>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
+              <div className="aspect-video bg-zinc-800 rounded-xl mb-4 flex items-center justify-center">
+                <span className="text-zinc-500 italic">Test Map Preview</span>
+              </div>
+              <h4 className="font-bold text-lg mb-2">Test Map Alpha</h4>
+              <p className="text-zinc-400 text-sm mb-6">A balanced battlefield with roads, forests, and a central water obstacle.</p>
+              <button 
+                onClick={onCreateSession}
+                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
+              >
+                <Plus className="w-5 h-5" />
+                Create Session
+              </button>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+              <Users className="w-5 h-5 text-orange-500" />
+              Active Lobbies
+            </h3>
+            <div className="space-y-4">
+              {sessions.length === 0 ? (
+                <div className="bg-zinc-900/50 border border-zinc-800 border-dashed rounded-2xl p-12 text-center text-zinc-500">
+                  No active lobbies. Create one to start!
+                </div>
+              ) : (
+                sessions.map(s => (
+                  <div key={s.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <h4 className="font-bold">Lobby by {(Object.values(s.players)[0] as any).displayName}</h4>
+                      <p className="text-zinc-500 text-sm">{Object.keys(s.players).length}/2 players</p>
+                    </div>
+                    <button 
+                      onClick={() => onJoinSession(s.id)}
+                      disabled={Object.keys(s.players).length >= 2}
+                      className="bg-zinc-800 hover:bg-zinc-700 px-6 py-2 rounded-lg font-bold disabled:opacity-50"
+                    >
+                      Join
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LobbyScreen({ user, session, onSelectTeam, onStart, onLeave }: { user: User, session: Session, onSelectTeam: (team: PlayerID) => void, onStart: () => void, onLeave: () => void }) {
+  const players = Object.values(session.players);
+  const myPlayer = session.players[user.uid];
+  const isHost = session.createdBy === user.uid;
+  const canStart = players.length === 2 && players.every(p => p.team) && players[0].team !== players[1].team;
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
+      <div className="max-w-2xl w-full">
+        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl">
+          <div className="flex items-center justify-between mb-8">
+            <h2 className="text-2xl font-bold">Game Lobby</h2>
+            <button onClick={onLeave} className="text-zinc-500 hover:text-white">Leave</button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6 mb-12">
+            {[1, 2].map(i => {
+              const player = players[i-1];
+              return (
+                <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center p-6 ${player ? 'bg-zinc-800/50 border-orange-500/50' : 'bg-zinc-900/50 border-zinc-800 border-dashed'}`}>
+                  {player ? (
+                    <>
+                      <div className="w-16 h-16 rounded-full bg-zinc-700 flex items-center justify-center mb-4">
+                        <UserIcon className="w-8 h-8 text-zinc-400" />
+                      </div>
+                      <span className="font-bold text-center">{player.displayName}</span>
+                      <span className={`text-xs mt-2 px-3 py-1 rounded-full ${player.team ? (player.team === 'player1' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400') : 'bg-zinc-700 text-zinc-500'}`}>
+                        {player.team ? (player.team === 'player1' ? 'Team Blue' : 'Team Red') : 'Selecting...'}
+                      </span>
+                    </>
+                  ) : (
+                    <div className="text-zinc-600 flex flex-col items-center">
+                      <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                      <span className="text-sm">Waiting for player...</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="space-y-6">
+            <div className="flex gap-4">
+              <button 
+                onClick={() => onSelectTeam('player1')}
+                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player1' ? 'bg-blue-500 border-blue-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-blue-500/50'}`}
+              >
+                Join Blue Team
+              </button>
+              <button 
+                onClick={() => onSelectTeam('player2')}
+                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player2' ? 'bg-red-500 border-red-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-red-500/50'}`}
+              >
+                Join Red Team
+              </button>
+            </div>
+
+            {isHost && (
+              <button 
+                onClick={onStart}
+                disabled={!canStart}
+                className="w-full bg-white text-black font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Play className="w-5 h-5 fill-current" />
+                Start Battle
+              </button>
+            )}
+            {!isHost && (
+              <div className="text-center text-zinc-500 text-sm italic">
+                Waiting for host to start the game...
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Game({ session, user, onExit }: { session: Session, user: User, onExit: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const myTeam = session.players[user.uid].team as PlayerID;
+  const isHost = session.createdBy === user.uid;
+
+  const [gameState, setGameState] = useState<GameState>(() => {
+    // If session has gameState, use it, otherwise initialize
+    if (session.gameState) return session.gameState;
+
+    const units: Unit[] = [];
     const environmentObjects: EnvironmentObject[] = [
       { id: 'road-1', type: 'road', x: 0, y: 380, width: 1200, height: 40 },
       { id: 'road-2', type: 'road', x: 580, y: 0, width: 40, height: 800 },
@@ -97,22 +473,18 @@ export default function App() {
       { id: 'runway-2', type: 'runway', x: 1000, y: 300, width: 150, height: 60 },
     ];
     
-    // Initial units for Player 1 (Left side)
     for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
       const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
       units.push(createUnit(`p1-${i}`, 'player1', 100 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
     }
-    // Add an aircraft for player 1
     const p1Aircraft = createUnit('p1-air-1', 'player1', 125, 330, 100, 'aircraft');
     p1Aircraft.baseRunwayId = 'runway-1';
     units.push(p1Aircraft);
     
-    // Initial units for Player 2 (Right side)
     for (let i = 0; i < INITIAL_UNITS_PER_PLAYER; i++) {
       const type = i === 0 ? 'amphibious' : i === 1 ? 'artillery' : i === 2 ? 'aa' : 'infantry';
       units.push(createUnit(`p2-${i}`, 'player2', 1000 + Math.random() * 100, 100 + Math.random() * 600, 100, type));
     }
-    // Add an aircraft for player 2
     const p2Aircraft = createUnit('p2-air-1', 'player2', 1075, 330, 100, 'aircraft');
     p2Aircraft.baseRunwayId = 'runway-2';
     units.push(p2Aircraft);
@@ -146,8 +518,59 @@ export default function App() {
     };
   });
 
+  // Sync with Firestore
+  useEffect(() => {
+    if (!session?.gameState) return;
+    
+    if (!isHost) {
+      setGameState(session.gameState);
+    } else {
+      // Host: merge client's unit targets from clientTargets
+      if (session.clientTargets) {
+        setGameState(prev => {
+          const nextUnits = [...prev.units];
+          let changed = false;
+          Object.entries(session.clientTargets!).forEach(([unitId, targets]) => {
+            const unitIndex = nextUnits.findIndex(u => u.id === unitId);
+            if (unitIndex !== -1 && nextUnits[unitIndex].ownerId !== myTeam) {
+              const unit = nextUnits[unitIndex];
+              if (unit.targetX !== targets.targetX || unit.targetY !== targets.targetY) {
+                nextUnits[unitIndex] = { 
+                  ...unit, 
+                  targetX: targets.targetX, 
+                  targetY: targets.targetY,
+                  attackPoint: targets.attackPoint,
+                  aircraftState: targets.aircraftState || unit.aircraftState,
+                  occupyingBuildingId: undefined 
+                };
+                changed = true;
+              }
+            }
+          });
+          return changed ? { ...prev, units: nextUnits } : prev;
+        });
+      }
+    }
+  }, [session?.gameState, session?.clientTargets, isHost, myTeam]);
+
+  // Host updates Firestore periodically
+  useEffect(() => {
+    if (!isHost) return;
+    const interval = setInterval(async () => {
+      try {
+        await updateDoc(doc(db, 'sessions', session.id), {
+          gameState,
+          updatedAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.error("Sync failed", error);
+      }
+    }, 1000); // Sync every 1s to save quota
+    return () => clearInterval(interval);
+  }, [gameState, isHost, session.id]);
+
   const [selectedUnitIds, setSelectedUnitIds] = useState<Set<string>>(new Set());
-  const [activePlayer, setActivePlayer] = useState<PlayerID>('player1');
+  const [activePlayer, setActivePlayer] = useState<PlayerID>(myTeam);
   const [selectionBox, setSelectionBox] = useState<{ x1: number, y1: number, x2: number, y2: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -159,6 +582,7 @@ export default function App() {
   // --- Game Loop ---
 
   useEffect(() => {
+    if (!isHost) return; // Only host runs the game logic
     let animationFrameId: number;
 
     const update = () => {
@@ -1228,7 +1652,7 @@ export default function App() {
         const newSelected = new Set<string>();
         gameState.units.forEach((unit) => {
           if (
-            unit.ownerId === activePlayer &&
+            unit.ownerId === myTeam &&
             unit.x >= xMin && unit.x <= xMax &&
             unit.y >= yMin && unit.y <= yMax
           ) {
@@ -1252,48 +1676,56 @@ export default function App() {
     const selectedUnits = gameState.units.filter(u => selectedUnitIds.has(u.id));
     const offsets = getFormationOffsets(selectedUnits.length);
 
-    setGameState(prev => ({
-      ...prev,
-      units: prev.units.map(unit => {
-        if (selectedUnitIds.has(unit.id)) {
-          if (unit.unitType === 'aircraft') {
-            // Aircraft targeting
-            if (unit.aircraftState === 'idle' || unit.aircraftState === 'returning' || unit.aircraftState === 'flyingToTarget') {
-              return {
-                ...unit,
-                attackPoint: { x, y },
-                aircraftState: 'takingOff'
-              };
-            }
-            return unit;
-          }
+    const updates: Record<string, any> = {};
 
-          const index = selectedUnits.findIndex(u => u.id === unit.id);
-          const offset = offsets[index] || { dx: 0, dy: 0 };
-          
-          let targetX = x + offset.dx;
-          let targetY = y + offset.dy;
+    const nextUnits = gameState.units.map(unit => {
+      if (selectedUnitIds.has(unit.id)) {
+        const index = selectedUnits.findIndex(u => u.id === unit.id);
+        const offset = offsets[index] || { dx: 0, dy: 0 };
+        
+        let targetX = x + offset.dx;
+        let targetY = y + offset.dy;
 
-          // If target is inside a building, snap to building center
-          const building = prev.buildings.find(b => 
-            targetX >= b.x && targetX <= b.x + b.width &&
-            targetY >= b.y && targetY <= b.y + b.height
-          );
+        const building = gameState.buildings.find(b => 
+          targetX >= b.x && targetX <= b.x + b.width &&
+          targetY >= b.y && targetY <= b.y + b.height
+        );
 
-          if (building) {
-            targetX = building.x + building.width / 2;
-            targetY = building.y + building.height / 2;
-          }
-
-          // Clamp targets to game bounds
-          targetX = Math.max(unit.radius, Math.min(GAME_WIDTH - unit.radius, targetX));
-          targetY = Math.max(unit.radius, Math.min(GAME_HEIGHT - unit.radius, targetY));
-
-          return { ...unit, targetX, targetY, occupyingBuildingId: undefined }; // Moving resets occupancy intent
+        if (building) {
+          targetX = building.x + building.width / 2;
+          targetY = building.y + building.height / 2;
         }
-        return unit;
-      })
-    }));
+
+        targetX = Math.max(unit.radius, Math.min(GAME_WIDTH - unit.radius, targetX));
+        targetY = Math.max(unit.radius, Math.min(GAME_HEIGHT - unit.radius, targetY));
+
+        let aircraftState = unit.aircraftState;
+        let attackPoint = unit.attackPoint;
+
+        if (unit.unitType === 'aircraft') {
+          if (unit.aircraftState === 'idle' || unit.aircraftState === 'returning' || unit.aircraftState === 'flyingToTarget') {
+            aircraftState = 'takingOff';
+            attackPoint = { x, y };
+          }
+        }
+
+        updates[unit.id] = { targetX, targetY, attackPoint, aircraftState };
+        return { ...unit, targetX, targetY, attackPoint, aircraftState, occupyingBuildingId: undefined };
+      }
+      return unit;
+    });
+
+    if (isHost) {
+      setGameState(prev => ({ ...prev, units: nextUnits }));
+    } else {
+      // Client updates clientTargets in Firestore
+      const sessionRef = doc(db, 'sessions', session.id);
+      const clientTargets: Record<string, any> = {};
+      Object.entries(updates).forEach(([id, data]) => {
+        clientTargets[`clientTargets.${id}`] = data;
+      });
+      updateDoc(sessionRef, clientTargets);
+    }
   };
 
   // --- Touch Handlers ---
@@ -1432,49 +1864,45 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white font-sans selection:bg-blue-500/30 touch-none">
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans">
       {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-10 p-4 md:p-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent backdrop-blur-sm border-b border-white/5">
-        <div className="flex items-center gap-3 md:gap-4">
-          <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-            <Sword className="w-5 h-5 md:w-6 md:h-6 text-white" />
+      <header className="flex items-center justify-between px-6 py-4 bg-zinc-900/50 border-b border-zinc-800 backdrop-blur-md z-10">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Sword className="w-6 h-6 text-orange-500" />
+            <h1 className="text-xl font-bold tracking-tight uppercase italic">Strategy IO</h1>
           </div>
-          <div>
-            <h1 className="text-lg md:text-xl font-bold tracking-tight uppercase italic leading-none">Strategy IO</h1>
-            <p className="text-[8px] md:text-[10px] text-white/40 uppercase tracking-widest font-mono">Alpha v0.1.0</p>
-          </div>
-        </div>
-
-        <div className="hidden md:flex gap-8 items-center bg-white/5 px-8 py-3 rounded-full border border-white/10">
-          <div className={`flex items-center gap-3 transition-opacity ${activePlayer === 'player1' ? 'opacity-100' : 'opacity-30'}`}>
-            <div className="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" />
-            <span className="text-sm font-bold uppercase tracking-wider">Player 1</span>
-          </div>
-          <div className="w-px h-4 bg-white/10" />
-          <div className={`flex items-center gap-3 transition-opacity ${activePlayer === 'player2' ? 'opacity-100' : 'opacity-30'}`}>
-            <div className="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
-            <span className="text-sm font-bold uppercase tracking-wider">Player 2</span>
+          <div className="h-6 w-px bg-zinc-800 mx-2" />
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]" />
+              <span className="text-sm font-mono font-medium">{gameState.players.player1.score}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
+              <span className="text-sm font-mono font-medium">{gameState.players.player2.score}</span>
+            </div>
           </div>
         </div>
 
-        <div className="flex gap-2 md:gap-4">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800/50 rounded-full border border-zinc-700/50">
+            <Users className="w-4 h-4 text-zinc-400" />
+            <span className="text-xs font-medium text-zinc-300 uppercase tracking-wider">
+              {myTeam === 'player1' ? 'Blue Team' : 'Red Team'}
+            </span>
+          </div>
           <button 
-            onClick={() => setActivePlayer('player1')}
-            className={`px-3 py-2 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${activePlayer === 'player1' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
+            onClick={onExit}
+            className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm font-medium transition-colors"
           >
-            P1
-          </button>
-          <button 
-            onClick={() => setActivePlayer('player2')}
-            className={`px-3 py-2 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold uppercase tracking-widest transition-all ${activePlayer === 'player2' ? 'bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
-          >
-            P2
+            Exit Game
           </button>
         </div>
       </header>
 
       {/* Main Game Area - Full Screen */}
-      <main className="fixed inset-0 bg-[#0a0a0a] flex items-center justify-center overflow-hidden">
+      <main className="relative flex-1 bg-[#0a0a0a] flex items-center justify-center overflow-hidden">
         <div className="relative w-full h-full flex items-center justify-center">
           {/* Terrain Legend - Adjusted for Overlay */}
           <div className="absolute bottom-6 left-6 z-20 flex flex-wrap gap-3 md:gap-4 p-3 bg-black/40 backdrop-blur-md rounded-xl border border-white/5 text-[8px] md:text-[10px] uppercase tracking-widest font-bold text-white/60">

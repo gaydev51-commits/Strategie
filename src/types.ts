@@ -93,6 +93,23 @@ export interface AirProjectile {
   lifetime: number;
 }
 
+export interface Session {
+  id: string;
+  mapId: string;
+  status: 'waiting' | 'playing' | 'finished';
+  players: Record<string, {
+    uid: string;
+    displayName: string;
+    team: PlayerID | null;
+    joinedAt: any;
+  }>;
+  gameState?: GameState;
+  clientTargets?: Record<string, { targetX: number, targetY: number, attackPoint?: { x: number, y: number }, aircraftState?: any }>;
+  createdAt: any;
+  updatedAt: any;
+  createdBy: string;
+}
+
 export interface GameState {
   units: Unit[];
   players: Record<PlayerID, Player>;
