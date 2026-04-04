@@ -36,7 +36,7 @@ export function LobbyScreen({ user, session, onSelectTeam, onToggleReady, onStar
       }
     } else {
       console.log("Start button clicked but canStart or isHost is false", { canStart, isHost });
-      if (!isHost) alert(`Only the host can start. Host: ${session.createdBy}, You: ${user.uid}`);
+      if (!isHost) alert("Only the host can start the battle.");
       else if (!canStart) alert("Requirements not met yet.");
     }
   };

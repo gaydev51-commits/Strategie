@@ -61,7 +61,7 @@ const createUnit = (id: string, ownerId: PlayerID, x: number, y: number, hp: num
   if (isArtillery || isAA) speed *= 0.5;
   if (isAircraft) speed = UNIT_CONFIG.AIRCRAFT_SPEED;
 
-  return {
+  const unit: Unit = {
     id,
     ownerId,
     unitType,
@@ -78,14 +78,22 @@ const createUnit = (id: string, ownerId: PlayerID, x: number, y: number, hp: num
     targetY: y,
     pendingTargetX: x,
     pendingTargetY: y,
-    lastAttackTime: (isArtillery || isAircraft || isAA) ? 0 : undefined,
-    aircraftState: isAircraft ? 'idle' : undefined,
-    pendingAircraftState: isAircraft ? 'idle' : undefined,
-    ammo: isAircraft ? { bombs: UNIT_CONFIG.AIRCRAFT_AMMO_BOMBS, missiles: UNIT_CONFIG.AIRCRAFT_AMMO_MISSILES } : undefined,
-    selectedWeapon: isAircraft ? 'both' : undefined,
     canAttackAir: isAA,
     airAttackEfficiency: isAA ? UNIT_CONFIG.DEFAULT_AA_EFFICIENCY : 0,
   };
+
+  if (isArtillery || isAircraft || isAA) {
+    unit.lastAttackTime = 0;
+  }
+
+  if (isAircraft) {
+    unit.aircraftState = 'idle';
+    unit.pendingAircraftState = 'idle';
+    unit.ammo = { bombs: UNIT_CONFIG.AIRCRAFT_AMMO_BOMBS, missiles: UNIT_CONFIG.AIRCRAFT_AMMO_MISSILES };
+    unit.selectedWeapon = 'both';
+  }
+
+  return unit;
 };
 
 const createInitialGameState = (): GameState => {
@@ -448,7 +456,6 @@ export default function App() {
 
     try {
       console.log("Starting game session:", currentSessionId);
-      alert("Starting battle... please wait.");
       const sessionRef = doc(db, 'sessions', currentSessionId);
       const initialGameState = createInitialGameState();
       
@@ -456,14 +463,16 @@ export default function App() {
         throw new Error("Game state initialization failed: No units created.");
       }
 
+      // Strip undefined values for Firestore
+      const gameStateForFirestore = JSON.parse(JSON.stringify(initialGameState));
+
       await updateDoc(sessionRef, {
         status: 'playing',
-        gameState: initialGameState,
+        gameState: gameStateForFirestore,
         updatedAt: serverTimestamp(),
         lastActiveAt: serverTimestamp()
       });
       console.log("Session status updated to 'playing'");
-      alert("Battle started!");
     } catch (error: any) {
       console.error("Error starting game:", error);
       alert("Failed to start battle: " + (error.message || "Unknown error"));
@@ -1808,7 +1817,9 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
       const sessionRef = doc(db, 'sessions', session.id);
       const clientTargets: Record<string, any> = {};
       Object.entries(updates).forEach(([id, data]) => {
-        clientTargets[`clientTargets.${id}`] = data;
+        // Strip undefined from data for Firestore
+        const cleanData = JSON.parse(JSON.stringify(data));
+        clientTargets[`clientTargets.${id}`] = cleanData;
       });
       updateDoc(sessionRef, clientTargets);
     }
