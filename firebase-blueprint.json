@@ -23,7 +23,7 @@
         "status": { "type": "string", "enum": ["waiting", "playing", "finished"] },
         "players": {
           "type": "object",
-          "description": "Map of player UIDs to their session data"
+          "description": "Map of player UIDs to their session data (uid, displayName, team, joinedAt, ready, lastSeen)"
         },
         "gameState": {
           "type": "object",
@@ -31,6 +31,7 @@
         },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
+        "lastActiveAt": { "type": "string", "format": "date-time" },
         "createdBy": { "type": "string" }
       },
       "required": ["id", "mapId", "status", "players", "createdAt", "createdBy"]

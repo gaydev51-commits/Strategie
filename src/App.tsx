@@ -210,7 +210,12 @@ export default function App() {
 
     const unsubscribe = onSnapshot(doc(db, 'sessions', currentSessionId), (doc) => {
       if (doc.exists()) {
-        setSession({ id: doc.id, ...doc.data() } as Session);
+        const data = { id: doc.id, ...doc.data() } as Session;
+        if (data.status === 'finished') {
+          setCurrentSessionId(null);
+        } else {
+          setSession(data);
+        }
       } else {
         setCurrentSessionId(null);
       }
@@ -282,11 +287,14 @@ export default function App() {
             uid: user.uid,
             displayName: user.displayName || 'Anonymous',
             team: null,
-            joinedAt: new Date().toISOString()
+            joinedAt: new Date().toISOString(),
+            ready: true, // Host is ready by default
+            lastSeen: serverTimestamp()
           }
         },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp(),
         createdBy: user.uid
       };
       await setDoc(newDocRef, sessionData);
@@ -309,9 +317,12 @@ export default function App() {
               uid: user.uid,
               displayName: user.displayName || 'Anonymous',
               team: null,
-              joinedAt: new Date().toISOString()
+              joinedAt: new Date().toISOString(),
+              ready: false,
+              lastSeen: serverTimestamp()
             },
-            updatedAt: serverTimestamp()
+            updatedAt: serverTimestamp(),
+            lastActiveAt: serverTimestamp()
           });
           setCurrentSessionId(sessionId);
         }
@@ -321,13 +332,83 @@ export default function App() {
     }
   };
 
+  const leaveSession = async () => {
+    if (!user || !currentSessionId || !session) return;
+    try {
+      const sessionRef = doc(db, 'sessions', currentSessionId);
+      const updatedPlayers = { ...session.players };
+      delete updatedPlayers[user.uid];
+
+      if (Object.keys(updatedPlayers).length === 0) {
+        // Delete session if last player leaves
+        // Note: In a real app, you might want a cloud function for this
+        // but for now we'll try to delete it directly.
+        // If it fails due to rules, it will be cleaned up by the timeout.
+        try {
+          // We can't easily delete from client if rules are strict, 
+          // but we can set status to finished or similar.
+          await updateDoc(sessionRef, { status: 'finished', updatedAt: serverTimestamp() });
+        } catch (e) {
+          console.error("Failed to mark session as finished", e);
+        }
+      } else {
+        // If host leaves, assign new host or close session
+        const isHost = session.createdBy === user.uid;
+        if (isHost) {
+          // Close session if host leaves
+          await updateDoc(sessionRef, { status: 'finished', updatedAt: serverTimestamp() });
+        } else {
+          // Just remove the player
+          const updateData: any = {
+            updatedAt: serverTimestamp(),
+            lastActiveAt: serverTimestamp()
+          };
+          updateData[`players.${user.uid}`] = null; // This is how you delete a field in updateDoc
+          // Actually, use deleteField() from firebase/firestore if available, 
+          // but we don't have it imported. We can use a trick or just overwrite the whole players object.
+          const newPlayers = { ...session.players };
+          delete newPlayers[user.uid];
+          await updateDoc(sessionRef, { players: newPlayers, updatedAt: serverTimestamp() });
+        }
+      }
+      setCurrentSessionId(null);
+    } catch (error) {
+      console.error("Leave session failed", error);
+      setCurrentSessionId(null);
+    }
+  };
+
   const selectTeam = async (team: PlayerID) => {
     if (!user || !currentSessionId || !session) return;
+    
+    // Check if team is already taken
+    const otherPlayer = Object.values(session.players).find((p: any) => p.uid !== user.uid) as any;
+    if (otherPlayer && otherPlayer.team === team) {
+      alert("This team is already taken!");
+      return;
+    }
+
     try {
       const sessionRef = doc(db, 'sessions', currentSessionId);
       await updateDoc(sessionRef, {
         [`players.${user.uid}.team`]: team,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
+    }
+  };
+
+  const toggleReady = async () => {
+    if (!user || !currentSessionId || !session) return;
+    const myPlayer = session.players[user.uid];
+    try {
+      const sessionRef = doc(db, 'sessions', currentSessionId);
+      await updateDoc(sessionRef, {
+        [`players.${user.uid}.ready`]: !myPlayer.ready,
+        updatedAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp()
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
@@ -336,12 +417,33 @@ export default function App() {
 
   const startGame = async () => {
     if (!user || !currentSessionId || !session) return;
-    // Check if both players have selected teams and they are different
+    
+    // Only host can start
+    if (session.createdBy !== user.uid) return;
+
     const playerIds = Object.keys(session.players);
-    if (playerIds.length !== 2) return;
+    if (playerIds.length !== 2) {
+      alert("Waiting for another player...");
+      return;
+    }
+
     const p1 = session.players[playerIds[0]];
     const p2 = session.players[playerIds[1]];
-    if (!p1.team || !p2.team || p1.team === p2.team) return;
+    
+    if (!p1.team || !p2.team) {
+      alert("Both players must select a team!");
+      return;
+    }
+    
+    if (p1.team === p2.team) {
+      alert("Players must be on different teams!");
+      return;
+    }
+
+    if (!p1.ready || !p2.ready) {
+      alert("Both players must be ready!");
+      return;
+    }
 
     try {
       const sessionRef = doc(db, 'sessions', currentSessionId);
@@ -349,12 +451,51 @@ export default function App() {
       await updateDoc(sessionRef, {
         status: 'playing',
         gameState: initialGameState,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        lastActiveAt: serverTimestamp()
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
     }
   };
+
+  // Heartbeat effect
+  useEffect(() => {
+    if (!user || !currentSessionId) return;
+    
+    const interval = setInterval(async () => {
+      try {
+        const sessionRef = doc(db, 'sessions', currentSessionId);
+        await updateDoc(sessionRef, {
+          [`players.${user.uid}.lastSeen`]: serverTimestamp(),
+          lastActiveAt: serverTimestamp()
+        });
+      } catch (error) {
+        console.error("Heartbeat failed", error);
+      }
+    }, 30000); // Every 30 seconds
+
+    return () => clearInterval(interval);
+  }, [user, currentSessionId]);
+
+  // Timeout check effect
+  useEffect(() => {
+    if (!session || !user) return;
+    
+    const checkTimeout = () => {
+      const now = Date.now();
+      const fifteenMinutes = 15 * 60 * 1000;
+      const lastActive = session.lastActiveAt?.toMillis?.() || session.lastActiveAt || now;
+      
+      if (now - lastActive > fifteenMinutes) {
+        console.log("Session timed out due to inactivity");
+        leaveSession();
+      }
+    };
+
+    const interval = setInterval(checkTimeout, 60000); // Check every minute
+    return () => clearInterval(interval);
+  }, [session, user]);
 
   if (loading) {
     return (
@@ -373,11 +514,11 @@ export default function App() {
   }
 
   if (session?.status === 'waiting') {
-    return <LobbyScreen user={user} session={session} onSelectTeam={selectTeam} onStart={startGame} onLeave={() => setCurrentSessionId(null)} />;
+    return <LobbyScreen user={user} session={session} onSelectTeam={selectTeam} onToggleReady={toggleReady} onStart={startGame} onLeave={leaveSession} />;
   }
 
   if (session?.status === 'playing') {
-    return <Game session={session} user={user} onExit={() => setCurrentSessionId(null)} />;
+    return <Game session={session} user={user} onExit={leaveSession} />;
   }
 
   return null;
@@ -511,8 +652,17 @@ function MenuScreen({ user, onLogout, onCreateSession, onJoinSession }: { user: 
   useEffect(() => {
     const q = query(collection(db, 'sessions'), where('status', '==', 'waiting'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      const now = Date.now();
+      const fifteenMinutes = 15 * 60 * 1000;
       const s: Session[] = [];
-      snapshot.forEach(doc => s.push({ id: doc.id, ...doc.data() } as Session));
+      snapshot.forEach(doc => {
+        const data = doc.data() as Session;
+        const lastActive = data.lastActiveAt?.toMillis?.() || data.lastActiveAt || 0;
+        // Only show sessions active in the last 15 minutes
+        if (now - lastActive < fifteenMinutes) {
+          s.push({ id: doc.id, ...data } as Session);
+        }
+      });
       setSessions(s);
     });
     return unsubscribe;
@@ -597,11 +747,11 @@ function MenuScreen({ user, onLogout, onCreateSession, onJoinSession }: { user: 
   );
 }
 
-function LobbyScreen({ user, session, onSelectTeam, onStart, onLeave }: { user: User, session: Session, onSelectTeam: (team: PlayerID) => void, onStart: () => void, onLeave: () => void }) {
+function LobbyScreen({ user, session, onSelectTeam, onToggleReady, onStart, onLeave }: { user: User, session: Session, onSelectTeam: (team: PlayerID) => void, onToggleReady: () => void, onStart: () => void, onLeave: () => void }) {
   const players = Object.values(session.players);
   const myPlayer = session.players[user.uid];
   const isHost = session.createdBy === user.uid;
-  const canStart = players.length === 2 && players.every(p => p.team) && players[0].team !== players[1].team;
+  const canStart = players.length === 2 && players.every(p => p.team && p.ready) && players[0].team !== players[1].team;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
@@ -616,9 +766,14 @@ function LobbyScreen({ user, session, onSelectTeam, onStart, onLeave }: { user: 
             {[1, 2].map(i => {
               const player = players[i-1];
               return (
-                <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center p-6 ${player ? 'bg-zinc-800/50 border-orange-500/50' : 'bg-zinc-900/50 border-zinc-800 border-dashed'}`}>
+                <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center p-6 relative ${player ? 'bg-zinc-800/50 border-orange-500/50' : 'bg-zinc-900/50 border-zinc-800 border-dashed'}`}>
                   {player ? (
                     <>
+                      {player.ready && (
+                        <div className="absolute top-4 right-4 bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider">
+                          Ready
+                        </div>
+                      )}
                       <div className="w-16 h-16 rounded-full bg-zinc-700 flex items-center justify-center mb-4">
                         <UserIcon className="w-8 h-8 text-zinc-400" />
                       </div>
@@ -642,17 +797,26 @@ function LobbyScreen({ user, session, onSelectTeam, onStart, onLeave }: { user: 
             <div className="flex gap-4">
               <button 
                 onClick={() => onSelectTeam('player1')}
-                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player1' ? 'bg-blue-500 border-blue-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-blue-500/50'}`}
+                disabled={players.some(p => p.uid !== user.uid && p.team === 'player1')}
+                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player1' ? 'bg-blue-500 border-blue-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-blue-500/50 disabled:opacity-20 disabled:cursor-not-allowed'}`}
               >
                 Join Blue Team
               </button>
               <button 
                 onClick={() => onSelectTeam('player2')}
-                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player2' ? 'bg-red-500 border-red-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-red-500/50'}`}
+                disabled={players.some(p => p.uid !== user.uid && p.team === 'player2')}
+                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player2' ? 'bg-red-500 border-red-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-red-500/50 disabled:opacity-20 disabled:cursor-not-allowed'}`}
               >
                 Join Red Team
               </button>
             </div>
+
+            <button 
+              onClick={onToggleReady}
+              className={`w-full py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.ready ? 'bg-green-500 border-green-400 text-white' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-green-500/50'}`}
+            >
+              {myPlayer.ready ? 'I am Ready!' : 'Mark as Ready'}
+            </button>
 
             {isHost && (
               <button 

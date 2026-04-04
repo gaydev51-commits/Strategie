@@ -106,11 +106,14 @@ export interface Session {
     displayName: string;
     team: PlayerID | null;
     joinedAt: any;
+    ready?: boolean;
+    lastSeen?: any;
   }>;
   gameState?: GameState;
   clientTargets?: Record<string, { targetX: number, targetY: number, attackPoint?: { x: number, y: number }, aircraftState?: any }>;
   createdAt: any;
   updatedAt: any;
+  lastActiveAt?: any;
   createdBy: string;
 }
 
