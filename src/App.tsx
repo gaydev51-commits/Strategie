@@ -157,6 +157,36 @@ const createInitialGameState = (): GameState => {
 
 // --- Main Component ---
 
+// Helper to clean objects for Firestore (removes undefined, converts to null in arrays)
+const deepClean = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(v => (v === undefined ? null : deepClean(v)));
+  } else if (obj !== null && typeof obj === 'object') {
+    // Don't clean Firestore sentinels (FieldValues)
+    // They usually have a specific structure or constructor name
+    if (
+      obj.constructor?.name === 'FieldValue' || 
+      obj.constructor?.name === 'FieldValueImpl' ||
+      typeof obj._methodName === 'string' ||
+      obj['$$typeof'] === Symbol.for('firestore.field_value')
+    ) {
+      return obj;
+    }
+    
+    const cleaned: any = {};
+    let hasUndefined = false;
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = deepClean(value);
+      } else {
+        hasUndefined = true;
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -324,7 +354,7 @@ export default function App() {
       if (sessionSnap.exists()) {
         const data = sessionSnap.data() as Session;
         if (Object.keys(data.players).length < 2) {
-          await updateDoc(sessionRef, {
+          await updateDoc(sessionRef, deepClean({
             [`players.${user.uid}`]: {
               uid: user.uid,
               displayName: user.displayName || 'Anonymous',
@@ -335,7 +365,7 @@ export default function App() {
             },
             updatedAt: serverTimestamp(),
             lastActiveAt: serverTimestamp()
-          });
+          }));
           setCurrentSessionId(sessionId);
         }
       }
@@ -402,11 +432,11 @@ export default function App() {
 
     try {
       const sessionRef = doc(db, 'sessions', currentSessionId);
-      await updateDoc(sessionRef, {
+      await updateDoc(sessionRef, deepClean({
         [`players.${user.uid}.team`]: team,
         updatedAt: serverTimestamp(),
         lastActiveAt: serverTimestamp()
-      });
+      }));
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
     }
@@ -417,11 +447,11 @@ export default function App() {
     const myPlayer = session.players[user.uid];
     try {
       const sessionRef = doc(db, 'sessions', currentSessionId);
-      await updateDoc(sessionRef, {
+      await updateDoc(sessionRef, deepClean({
         [`players.${user.uid}.ready`]: !myPlayer.ready,
         updatedAt: serverTimestamp(),
         lastActiveAt: serverTimestamp()
-      });
+      }));
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
     }
@@ -458,13 +488,16 @@ export default function App() {
       console.log("Starting game session:", currentSessionId);
       const sessionRef = doc(db, 'sessions', currentSessionId);
       const initialGameState = createInitialGameState();
+      console.log("Initial game state created with units:", initialGameState.units.length);
       
       if (!initialGameState || !initialGameState.units || initialGameState.units.length === 0) {
         throw new Error("Game state initialization failed: No units created.");
       }
 
-      // Strip undefined values for Firestore
-      const gameStateForFirestore = JSON.parse(JSON.stringify(initialGameState));
+      // Strip undefined values for Firestore using deepClean
+      console.log("Cleaning game state for Firestore...");
+      const gameStateForFirestore = deepClean(initialGameState);
+      console.log("Game state cleaned. Updating Firestore status to 'playing'...");
 
       await updateDoc(sessionRef, {
         status: 'playing',
@@ -472,7 +505,7 @@ export default function App() {
         updatedAt: serverTimestamp(),
         lastActiveAt: serverTimestamp()
       });
-      console.log("Session status updated to 'playing'");
+      console.log("Session status successfully updated to 'playing'");
     } catch (error: any) {
       console.error("Error starting game:", error);
       alert("Failed to start battle: " + (error.message || "Unknown error"));
@@ -586,7 +619,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               pendingTargetY: targets.pendingTargetY,
               pendingAttackPoint: targets.pendingAttackPoint,
               pendingAircraftState: targets.pendingAircraftState || unit.pendingAircraftState,
-              occupyingBuildingId: undefined 
+              occupyingBuildingId: null 
             };
             changed = true;
           }
@@ -602,7 +635,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
     const interval = setInterval(async () => {
       try {
         await updateDoc(doc(db, 'sessions', session.id), {
-          gameState: gameStateRef.current,
+          gameState: deepClean(gameStateRef.current),
           updatedAt: serverTimestamp()
         });
       } catch (error) {
@@ -667,7 +700,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
           .filter(p => p.lifetime > 0);
 
         // Sync building occupants with unit states
-        nextBuildings.forEach(b => b.occupantId = undefined);
+        nextBuildings.forEach(b => b.occupantId = null);
         nextUnits.forEach(u => {
           if (u.occupyingBuildingId) {
             const b = nextBuildings.find(building => building.id === u.occupyingBuildingId);
@@ -785,7 +818,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               return;
             } else {
               // Building destroyed
-              unit.occupyingBuildingId = undefined;
+              unit.occupyingBuildingId = null;
             }
           }
 
@@ -1260,11 +1293,11 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               // Building destroyed
               const occupant = nextUnits.find(u => u.occupyingBuildingId === building.id);
               if (occupant) {
-                occupant.occupyingBuildingId = undefined;
+                occupant.occupyingBuildingId = null;
                 // Excess damage goes to unit
                 occupant.hp += building.hp; // building.hp is negative here
               }
-              building.occupantId = undefined;
+              building.occupantId = null;
             }
           }
         });
@@ -1805,7 +1838,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
         }
 
         updates[unit.id] = { pendingTargetX: targetX, pendingTargetY: targetY, pendingAttackPoint, pendingAircraftState };
-        return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, pendingAttackPoint, pendingAircraftState, occupyingBuildingId: undefined };
+        return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, pendingAttackPoint, pendingAircraftState, occupyingBuildingId: null };
       }
       return unit;
     });
@@ -1817,9 +1850,8 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
       const sessionRef = doc(db, 'sessions', session.id);
       const clientTargets: Record<string, any> = {};
       Object.entries(updates).forEach(([id, data]) => {
-        // Strip undefined from data for Firestore
-        const cleanData = JSON.parse(JSON.stringify(data));
-        clientTargets[`clientTargets.${id}`] = cleanData;
+        // Strip undefined from data for Firestore using deepClean
+        clientTargets[`clientTargets.${id}`] = deepClean(data);
       });
       updateDoc(sessionRef, clientTargets);
     }
@@ -1936,7 +1968,7 @@ function Game({ session, user, onExit }: { session: Session, user: User, onExit:
               targetX = Math.max(unit.radius, Math.min(GAME_WIDTH - unit.radius, targetX));
               targetY = Math.max(unit.radius, Math.min(GAME_HEIGHT - unit.radius, targetY));
 
-              return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, occupyingBuildingId: undefined };
+              return { ...unit, pendingTargetX: targetX, pendingTargetY: targetY, occupyingBuildingId: null };
             }
             return unit;
           })
