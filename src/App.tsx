@@ -10,6 +10,10 @@ import { PlayerID, Unit, Player, GameState, EnvironmentObject, Building, HeightA
 import { GAME_WIDTH, GAME_HEIGHT, PLAYER_COLORS, UNIT_CONFIG, INITIAL_UNITS_PER_PLAYER, TERRAIN_SPEED_MULTIPLIERS, BUILDING_CONFIG } from './constants.ts';
 import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, query, where, addDoc, serverTimestamp, User, OperationType, handleFirestoreError, createUserWithEmailAndPassword, signInWithEmailAndPassword } from './firebase';
 
+import { AuthScreen } from './components/AuthScreen';
+import { MenuScreen } from './components/MenuScreen';
+import { LobbyScreen } from './components/LobbyScreen';
+
 // --- Helper Functions ---
 
 const getDistance = (x1: number, y1: number, x2: number, y2: number) => {
@@ -428,11 +432,13 @@ export default function App() {
     const allReady = players.every(p => p.ready);
     
     if (!(hasTwoPlayers && allTeamsSelected && differentTeams && allReady)) {
+      console.log("Start game blocked: Requirements not met", { hasTwoPlayers, allTeamsSelected, differentTeams, allReady });
       alert("Not all requirements are met! Check the lobby checklist.");
       return;
     }
 
     try {
+      console.log("Starting game session:", currentSessionId);
       const sessionRef = doc(db, 'sessions', currentSessionId);
       const initialGameState = createInitialGameState();
       await updateDoc(sessionRef, {
@@ -441,7 +447,9 @@ export default function App() {
         updatedAt: serverTimestamp(),
         lastActiveAt: serverTimestamp()
       });
+      console.log("Session status updated to 'playing'");
     } catch (error) {
+      console.error("Error starting game:", error);
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
     }
   };
@@ -509,353 +517,6 @@ export default function App() {
   }
 
   return null;
-}
-
-// --- Sub-Components ---
-
-function AuthScreen({ onLogin, onSignUp }: { onLogin: (email: string, pass: string) => Promise<void>, onSignUp: (email: string, pass: string, displayName: string) => Promise<void> }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [isLogin, setIsLogin] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setIsLoading(true);
-    try {
-      if (isLogin) {
-        await onLogin(email, password);
-      } else {
-        if (!displayName.trim()) {
-          throw new Error("Please enter a display name.");
-        }
-        await onSignUp(email, password, displayName);
-      }
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8"
-      >
-        <div className="w-16 h-16 bg-orange-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
-          <Sword className="w-8 h-8 text-orange-500" />
-        </div>
-        <h1 className="text-2xl font-bold text-white mb-2 text-center">Strategy IO</h1>
-        <p className="text-zinc-400 mb-8 text-center text-sm">Command your units and conquer the map.</p>
-        
-        {error && (
-          <div className="space-y-2 mb-6">
-            <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-sm p-4 rounded-xl flex items-center gap-3">
-              <Activity className="w-4 h-4 shrink-0" />
-              {error}
-            </div>
-            <p className="text-[10px] text-zinc-600 text-center font-mono uppercase tracking-widest">
-              Debug Info: {error.includes('auth/') ? error : 'Check Firebase Console'}
-            </p>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {!isLogin && (
-            <div>
-              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Display Name</label>
-              <input 
-                type="text" 
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
-                placeholder="Commander Name"
-                required={!isLogin}
-              />
-            </div>
-          )}
-          <div>
-            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Email</label>
-            <input 
-              type="email" 
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
-              placeholder="your@email.com"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-1">Password</label>
-            <input 
-              type="password" 
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-orange-500 transition-colors"
-              placeholder="Min 6 characters"
-              required
-            />
-          </div>
-          
-          <button 
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-orange-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-3 hover:bg-orange-600 transition-colors mt-2 disabled:opacity-50"
-          >
-            {isLoading ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <LogIn className="w-5 h-5" />
-            )}
-            {isLogin ? 'Login' : 'Create Account'}
-          </button>
-        </form>
-
-        <div className="mt-6 text-center">
-          <button 
-            onClick={() => {
-              setIsLogin(!isLogin);
-              setError(null);
-            }}
-            className="text-orange-500 text-sm font-medium hover:underline"
-          >
-            {isLogin ? "Don't have an account? Sign up" : "Already have an account? Login"}
-          </button>
-        </div>
-      </motion.div>
-    </div>
-  );
-}
-
-function MenuScreen({ user, onLogout, onCreateSession, onJoinSession }: { user: User, onLogout: () => void, onCreateSession: () => void, onJoinSession: (id: string) => void }) {
-  const [sessions, setSessions] = useState<Session[]>([]);
-
-  useEffect(() => {
-    const q = query(collection(db, 'sessions'), where('status', '==', 'waiting'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const now = Date.now();
-      const fifteenMinutes = 15 * 60 * 1000;
-      const s: Session[] = [];
-      snapshot.forEach(doc => {
-        const data = doc.data() as Session;
-        const lastActive = data.lastActiveAt?.toMillis?.() || data.lastActiveAt || 0;
-        // Only show sessions active in the last 15 minutes
-        if (now - lastActive < fifteenMinutes) {
-          s.push({ id: doc.id, ...data } as Session);
-        }
-      });
-      setSessions(s);
-    });
-    return unsubscribe;
-  }, []);
-
-  return (
-    <div className="min-h-screen bg-zinc-950 text-white p-6">
-      <div className="max-w-4xl mx-auto">
-        <header className="flex items-center justify-between mb-12">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-orange-500 flex items-center justify-center bg-zinc-800">
-              {user.photoURL ? (
-                <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-              ) : (
-                <UserIcon className="w-6 h-6 text-orange-500" />
-              )}
-            </div>
-            <div>
-              <h2 className="font-bold text-lg">{user.displayName || user.email?.split('@')[0] || 'Player'}</h2>
-              <p className="text-zinc-500 text-sm">Ready for battle</p>
-            </div>
-          </div>
-          <button onClick={onLogout} className="p-2 hover:bg-zinc-900 rounded-lg text-zinc-400">
-            <LogOut className="w-6 h-6" />
-          </button>
-        </header>
-
-        <div className="grid md:grid-cols-2 gap-8">
-          <section>
-            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-              <MapIcon className="w-5 h-5 text-orange-500" />
-              Available Maps
-            </h3>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
-              <div className="aspect-video bg-zinc-800 rounded-xl mb-4 flex items-center justify-center">
-                <span className="text-zinc-500 italic">Test Map Preview</span>
-              </div>
-              <h4 className="font-bold text-lg mb-2">Test Map Alpha</h4>
-              <p className="text-zinc-400 text-sm mb-6">A balanced battlefield with roads, forests, and a central water obstacle.</p>
-              <button 
-                onClick={onCreateSession}
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition-colors"
-              >
-                <Plus className="w-5 h-5" />
-                Create Session
-              </button>
-            </div>
-          </section>
-
-          <section>
-            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-              <Users className="w-5 h-5 text-orange-500" />
-              Active Lobbies
-            </h3>
-            <div className="space-y-4">
-              {sessions.length === 0 ? (
-                <div className="bg-zinc-900/50 border border-zinc-800 border-dashed rounded-2xl p-12 text-center text-zinc-500">
-                  No active lobbies. Create one to start!
-                </div>
-              ) : (
-                sessions.map(s => (
-                  <div key={s.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between">
-                    <div>
-                      <h4 className="font-bold">Lobby by {(Object.values(s.players)[0] as any).displayName}</h4>
-                      <p className="text-zinc-500 text-sm">{Object.keys(s.players).length}/2 players</p>
-                    </div>
-                    <button 
-                      onClick={() => onJoinSession(s.id)}
-                      disabled={Object.keys(s.players).length >= 2}
-                      className="bg-zinc-800 hover:bg-zinc-700 px-6 py-2 rounded-lg font-bold disabled:opacity-50"
-                    >
-                      Join
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function LobbyScreen({ user, session, onSelectTeam, onToggleReady, onStart, onLeave }: { user: User, session: Session, onSelectTeam: (team: PlayerID) => void, onToggleReady: () => void, onStart: () => void, onLeave: () => void }) {
-  const players = Object.values(session.players) as any[];
-  const myPlayer = session.players[user.uid];
-  const isHost = session.createdBy === user.uid;
-  
-  const hasTwoPlayers = players.length === 2;
-  const allTeamsSelected = players.every(p => p.team);
-  const differentTeams = hasTwoPlayers && players[0].team !== players[1].team;
-  const allReady = players.every(p => p.ready);
-  
-  const canStart = hasTwoPlayers && allTeamsSelected && differentTeams && allReady;
-
-  const requirements = [
-    { label: "Two players in lobby", met: hasTwoPlayers },
-    { label: "Both teams selected", met: allTeamsSelected },
-    { label: "Different teams chosen", met: differentTeams },
-    { label: "Both players ready", met: allReady },
-  ];
-
-  return (
-    <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
-      <div className="max-w-2xl w-full">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 shadow-2xl">
-          <div className="flex items-center justify-between mb-8">
-            <h2 className="text-2xl font-bold">Game Lobby</h2>
-            <button onClick={onLeave} className="text-zinc-500 hover:text-white flex items-center gap-2">
-              <LogOut className="w-4 h-4" />
-              Leave
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-6 mb-8">
-            {[1, 2].map(i => {
-              const player = players[i-1];
-              return (
-                <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center p-6 relative transition-all ${player ? 'bg-zinc-800/50 border-orange-500/50' : 'bg-zinc-900/50 border-zinc-800 border-dashed'}`}>
-                  {player ? (
-                    <>
-                      {player.ready && (
-                        <div className="absolute top-4 right-4 bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider animate-pulse">
-                          Ready
-                        </div>
-                      )}
-                      <div className="w-16 h-16 rounded-full bg-zinc-700 flex items-center justify-center mb-4 shadow-inner">
-                        <UserIcon className="w-8 h-8 text-zinc-400" />
-                      </div>
-                      <span className="font-bold text-center truncate w-full">{player.displayName}</span>
-                      <span className={`text-xs mt-2 px-3 py-1 rounded-full font-medium ${player.team ? (player.team === 'player1' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400') : 'bg-zinc-800 text-zinc-500'}`}>
-                        {player.team ? (player.team === 'player1' ? 'Team Blue' : 'Team Red') : 'Selecting team...'}
-                      </span>
-                    </>
-                  ) : (
-                    <div className="text-zinc-600 flex flex-col items-center">
-                      <Loader2 className="w-8 h-8 animate-spin mb-2 opacity-20" />
-                      <span className="text-sm font-medium">Waiting for player...</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Requirements Checklist */}
-          <div className="bg-black/20 rounded-2xl p-4 mb-8 border border-zinc-800/50">
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Battle Readiness</h4>
-            <div className="grid grid-cols-2 gap-2">
-              {requirements.map((req, idx) => (
-                <div key={idx} className="flex items-center gap-2 text-sm">
-                  <div className={`w-4 h-4 rounded-full flex items-center justify-center ${req.met ? 'bg-green-500/20 text-green-500' : 'bg-zinc-800 text-zinc-600'}`}>
-                    {req.met ? <Check className="w-3 h-3" /> : <div className="w-1.5 h-1.5 rounded-full bg-current" />}
-                  </div>
-                  <span className={req.met ? 'text-zinc-300' : 'text-zinc-600'}>{req.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div className="flex gap-4">
-              <button 
-                onClick={() => onSelectTeam('player1')}
-                disabled={players.some(p => p.uid !== user.uid && p.team === 'player1')}
-                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player1' ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_20px_rgba(37,99,235,0.3)]' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-blue-500/50 disabled:opacity-20 disabled:cursor-not-allowed'}`}
-              >
-                Join Blue Team
-              </button>
-              <button 
-                onClick={() => onSelectTeam('player2')}
-                disabled={players.some(p => p.uid !== user.uid && p.team === 'player2')}
-                className={`flex-1 py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.team === 'player2' ? 'bg-red-600 border-red-400 text-white shadow-[0_0_20px_rgba(220,38,38,0.3)]' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-red-500/50 disabled:opacity-20 disabled:cursor-not-allowed'}`}
-              >
-                Join Red Team
-              </button>
-            </div>
-
-            <button 
-              onClick={onToggleReady}
-              className={`w-full py-4 rounded-xl font-bold border-2 transition-all ${myPlayer.ready ? 'bg-green-600 border-green-400 text-white shadow-[0_0_20px_rgba(22,163,74,0.3)]' : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:border-green-500/50'}`}
-            >
-              {myPlayer.ready ? 'I am Ready!' : 'Mark as Ready'}
-            </button>
-
-            {isHost && (
-              <button 
-                onClick={onStart}
-                disabled={!canStart}
-                className={`w-full font-bold py-4 rounded-xl flex items-center justify-center gap-2 transition-all ${canStart ? 'bg-white text-black hover:bg-zinc-200 shadow-[0_0_30px_rgba(255,255,255,0.2)]' : 'bg-zinc-800 text-zinc-600 border border-zinc-700 cursor-not-allowed'}`}
-              >
-                <Play className={`w-5 h-5 ${canStart ? 'fill-current' : ''}`} />
-                Start Battle
-              </button>
-            )}
-            {!isHost && (
-              <div className="text-center text-zinc-500 text-sm italic py-2">
-                {canStart ? 'Host is about to start the battle...' : 'Waiting for battle requirements to be met...'}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function Game({ session, user, onExit }: { session: Session, user: User, onExit: () => void }) {
