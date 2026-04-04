@@ -23,11 +23,21 @@ export function LobbyScreen({ user, session, onSelectTeam, onToggleReady, onStar
   ];
 
   // For Android/Mobile, sometimes onClick is better handled with a slight delay or ensuring no hover interference
-  const handleStart = (e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
+  const handleStart = async (e: React.MouseEvent | React.TouchEvent) => {
+    // e.preventDefault(); // Removed to avoid potential issues with click events on some browsers
+    console.log("handleStart triggered", { canStart, isHost });
     if (canStart && isHost) {
       console.log("Start button clicked, calling onStart");
-      onStart();
+      try {
+        await onStart();
+      } catch (error: any) {
+        console.error("LobbyScreen: onStart failed", error);
+        alert("Error starting game: " + (error.message || "Unknown error"));
+      }
+    } else {
+      console.log("Start button clicked but canStart or isHost is false", { canStart, isHost });
+      if (!isHost) alert(`Only the host can start. Host: ${session.createdBy}, You: ${user.uid}`);
+      else if (!canStart) alert("Requirements not met yet.");
     }
   };
 

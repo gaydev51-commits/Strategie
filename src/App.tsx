@@ -420,10 +420,19 @@ export default function App() {
   };
 
   const startGame = async () => {
-    if (!user || !currentSessionId || !session) return;
+    console.log("startGame called");
+    if (!user || !currentSessionId || !session) {
+      console.warn("startGame early return: Missing data", { user: !!user, currentSessionId, session: !!session });
+      alert(`Missing data: User: ${!!user}, SessionID: ${currentSessionId}, Session: ${!!session}`);
+      return;
+    }
     
     // Only host can start
-    if (session.createdBy !== user.uid) return;
+    if (session.createdBy !== user.uid) {
+      console.warn("startGame early return: Not host", { createdBy: session.createdBy, uid: user.uid });
+      alert(`Not host. CreatedBy: ${session.createdBy}, Your UID: ${user.uid}`);
+      return;
+    }
 
     const players = Object.values(session.players) as any[];
     const hasTwoPlayers = players.length === 2;
@@ -439,8 +448,14 @@ export default function App() {
 
     try {
       console.log("Starting game session:", currentSessionId);
+      alert("Starting battle... please wait.");
       const sessionRef = doc(db, 'sessions', currentSessionId);
       const initialGameState = createInitialGameState();
+      
+      if (!initialGameState || !initialGameState.units || initialGameState.units.length === 0) {
+        throw new Error("Game state initialization failed: No units created.");
+      }
+
       await updateDoc(sessionRef, {
         status: 'playing',
         gameState: initialGameState,
@@ -448,8 +463,10 @@ export default function App() {
         lastActiveAt: serverTimestamp()
       });
       console.log("Session status updated to 'playing'");
-    } catch (error) {
+      alert("Battle started!");
+    } catch (error: any) {
       console.error("Error starting game:", error);
+      alert("Failed to start battle: " + (error.message || "Unknown error"));
       handleFirestoreError(error, OperationType.UPDATE, `sessions/${currentSessionId}`);
     }
   };
